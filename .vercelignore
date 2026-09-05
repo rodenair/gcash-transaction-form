@@ -1,0 +1,4 @@
+# Only the static form is served. The backend lives in Google Apps Script.
+apps-script/
+tests/
+README.md
