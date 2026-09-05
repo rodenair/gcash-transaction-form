@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<title>GCash Tracker — Add Record</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #131c2e;
+    --panel-2: #1b2740;
+    --line: #26334d;
+    --text: #eef2f9;
+    --muted: #94a3b8;
+    --accent: #2f7cf6;
+    --accent-soft: #17325e;
+    --good: #34d399;
+    --bad: #f87171;
+    --warn: #fbbf24;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) calc(env(safe-area-inset-bottom) + 96px);
+    min-height: 100vh;
+  }
+  .wrap { max-width: 560px; margin: 0 auto; padding: 14px 14px 0; }
+  h1 { font-size: 19px; margin: 4px 0 14px; letter-spacing: .2px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .spread { justify-content: space-between; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .tiny { font-size: 12px; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+
+  /* balances */
+  .balances { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .bal { background: var(--panel-2); border-radius: 12px; padding: 10px 12px; }
+  .bal .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  .bal .value { font-size: 20px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .bal .value.neg { color: var(--bad); }
+
+  label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 6px; text-transform: uppercase; letter-spacing: .6px; }
+  input, select, textarea, button { font: inherit; color: inherit; font-family: inherit; }
+  input, select, textarea {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 12px; padding: 13px 14px; outline: none;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  textarea { min-height: 64px; resize: vertical; }
+  .amount-input { font-size: 30px; font-weight: 700; letter-spacing: .5px; padding: 12px 14px 12px 40px; font-variant-numeric: tabular-nums; }
+  .amount-wrap { position: relative; }
+  .peso { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); font-size: 24px; color: var(--muted); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    border: 1px solid var(--line); background: var(--panel-2); border-radius: 999px;
+    padding: 9px 14px; cursor: pointer; font-size: 14px;
+  }
+  .chip:active { transform: scale(.97); }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .seg button {
+    border: 1px solid var(--line); background: var(--panel-2); border-radius: 12px;
+    padding: 13px 6px; cursor: pointer; font-size: 15px;
+  }
+  .seg button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+
+  .preview { background: var(--panel-2); border-radius: 12px; padding: 11px 13px; font-size: 14px; }
+  .preview b { font-variant-numeric: tabular-nums; }
+
+  .submit-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, var(--bg) 70%, transparent);
+  }
+  .submit-bar .inner { max-width: 560px; margin: 0 auto; }
+  .btn {
+    width: 100%; border: none; border-radius: 14px; padding: 16px; font-size: 17px; font-weight: 650;
+    background: var(--accent); color: #fff; cursor: pointer;
+  }
+  .btn[disabled] { opacity: .55; }
+  .btn.secondary { background: var(--panel-2); border: 1px solid var(--line); color: var(--text); font-weight: 500; font-size: 15px; padding: 12px; }
+  .btn.ghost { background: transparent; border: 1px solid var(--line); }
+
+  .toast {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 92px; width: calc(100% - 28px); max-width: 532px;
+    background: var(--panel-2); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    border-radius: 12px; padding: 12px 14px; font-size: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.45);
+  }
+  .toast.ok { border-left-color: var(--good); }
+  .toast.err { border-left-color: var(--bad); }
+  .toast.warn { border-left-color: var(--warn); }
+  [hidden] { display: none !important; }
+  a { color: var(--accent); }
+  .link { background: none; border: none; color: var(--accent); padding: 0; font-size: 13px; cursor: pointer; text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<!-- ------------------------------------------------------------ setup ---->
+<section id="setup" class="wrap" hidden>
+  <h1>Connect your tracker</h1>
+  <div class="card">
+    <div class="field">
+      <label for="setupUrl">Apps Script Web App URL</label>
+      <input id="setupUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec">
+    </div>
+    <div class="field">
+      <label for="setupSecret">Shared secret (optional)</label>
+      <input id="setupSecret" type="text" autocomplete="off" placeholder="Must match SETTINGS.sharedSecret">
+    </div>
+    <button class="btn" id="setupSave">Connect</button>
+    <p class="small muted" style="margin-bottom:0">Deployment steps are in the README of this repo. The URL is saved on this phone only.</p>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------- form ---->
+<section id="app" class="wrap" hidden>
+  <div class="row spread">
+    <h1 id="sheetTitle">Add record</h1>
+    <button class="link" id="openSettings">Settings</button>
+  </div>
+
+  <div class="card">
+    <div class="balances">
+      <div class="bal"><div class="label">Cash on hand</div><div class="value" id="balCash">—</div></div>
+      <div class="bal"><div class="label">E-money</div><div class="value" id="balEmoney">—</div></div>
+    </div>
+    <div class="row spread small muted" style="margin-top:10px">
+      <span id="sheetLine">Loading…</span>
+      <button class="link" id="refresh">Refresh</button>
+    </div>
+  </div>
+
+  <form id="form" class="card" novalidate>
+    <div class="field">
+      <label>Type</label>
+      <div class="seg" id="typeSeg"></div>
+    </div>
+
+    <div class="field">
+      <label for="amount">Amount</label>
+      <div class="amount-wrap">
+        <span class="peso">₱</span>
+        <input id="amount" class="amount-input" type="text" inputmode="decimal" autocomplete="off" placeholder="0">
+      </div>
+      <div class="chips" style="margin-top:8px" id="amountChips"></div>
+    </div>
+
+    <div class="field">
+      <label for="customer">Customer / Ref</label>
+      <input id="customer" type="text" list="customerList" autocomplete="off" placeholder="Optional">
+      <datalist id="customerList"></datalist>
+      <div class="chips" style="margin-top:8px" id="customerChips"></div>
+    </div>
+
+    <div class="field">
+      <label for="date">Date</label>
+      <div class="row">
+        <input id="date" type="date">
+        <button type="button" class="chip" id="todayBtn">Today</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="notes">Notes</label>
+      <textarea id="notes" placeholder="Optional"></textarea>
+    </div>
+
+    <div class="preview" id="preview">Enter an amount to see the fee.</div>
+  </form>
+
+  <div class="card" id="queueCard" hidden>
+    <div class="row spread">
+      <span class="small"><b id="queueCount">0</b> record(s) waiting to send</span>
+      <button class="btn secondary" style="width:auto" id="queueRetry">Retry now</button>
+    </div>
+    <button class="link" id="queueClear" style="margin-top:8px">Discard them</button>
+  </div>
+</section>
+
+<!-- --------------------------------------------------------- settings ---->
+<section id="settings" class="wrap" hidden>
+  <div class="row spread">
+    <h1>Settings</h1>
+    <button class="link" id="closeSettings">Done</button>
+  </div>
+  <div class="card">
+    <div class="field">
+      <label for="cfgSheet">Target sheet</label>
+      <select id="cfgSheet"></select>
+      <p class="tiny muted" style="margin:6px 0 0">Auto picks the sheet whose latest entry is in the same month as the record.</p>
+    </div>
+    <div class="field">
+      <label for="cfgUrl">Web App URL</label>
+      <input id="cfgUrl" type="url" inputmode="url" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="cfgSecret">Shared secret</label>
+      <input id="cfgSecret" type="text" autocomplete="off">
+    </div>
+    <button class="btn" id="cfgSave">Save</button>
+    <button class="btn secondary" id="cfgForget" style="margin-top:10px">Disconnect this phone</button>
+  </div>
+</section>
+
+<div id="toast" class="toast" hidden></div>
+
+<div class="submit-bar" id="submitBar" hidden>
+  <div class="inner"><button class="btn" id="submit">Add record</button></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var STORE = 'gcashForm.settings';
+  var QUEUE = 'gcashForm.queue';
+  var AMOUNT_CHIPS = [50, 100, 300, 500, 1000, 2000, 5000];
+  var FALLBACK_TYPES = ['Cash In', 'Cash Out', 'Fund In', 'Load', 'Expense'];
+
+  var $ = function (id) { return document.getElementById(id); };
+  var settings = load(STORE, { url: '', secret: '', sheet: '' });
+  var config = null;
+  var selectedType = FALLBACK_TYPES[0];
+  var sending = false;
+
+  /* ------------------------------------------------------------ storage */
+  function load(key, fallback) {
+    try { return Object.assign({}, fallback, JSON.parse(localStorage.getItem(key) || '{}')); }
+    catch (e) { return fallback; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+  }
+  function queue() {
+    try { return JSON.parse(localStorage.getItem(QUEUE) || '[]'); } catch (e) { return []; }
+  }
+  function setQueue(items) {
+    try { localStorage.setItem(QUEUE, JSON.stringify(items)); } catch (e) {}
+    renderQueue();
+  }
+
+  /* ----------------------------------------------------------- helpers */
+  function peso(value) {
+    if (value === null || value === undefined || isNaN(value)) return '—';
+    var sign = value < 0 ? '-' : '';
+    return sign + '₱' + Math.abs(value).toLocaleString('en-PH', { maximumFractionDigits: 2 });
+  }
+  function todayISO() {
+    var d = new Date();
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  }
+  function uuid() {
+    return 'x-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+  }
+  var toastTimer;
+  function toast(message, kind) {
+    var el = $('toast');
+    el.textContent = message;
+    el.className = 'toast ' + (kind || '');
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.hidden = true; }, kind === 'err' ? 7000 : 4000);
+  }
+  function show(section) {
+    ['setup', 'app', 'settings'].forEach(function (id) { $(id).hidden = id !== section; });
+    $('submitBar').hidden = section !== 'app';
+  }
+
+  /* -------------------------------------------------------------- wire */
+  function call(payload) {
+    return fetch(settings.url, {
+      method: 'POST',
+      // text/plain keeps this a simple request, so the browser skips the CORS
+      // preflight that Apps Script cannot answer.
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ token: settings.secret }, payload)),
+      redirect: 'follow'
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var data;
+        try { data = JSON.parse(text); }
+        catch (e) { throw new Error('The script did not return JSON. Check that the deployment allows access to "Anyone".'); }
+        if (!data.ok) throw new Error(data.error || 'The script rejected the request.');
+        return data;
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------ config */
+  function loadConfig() {
+    $('sheetLine').textContent = 'Loading…';
+    return call({ action: 'config' }).then(function (data) {
+      config = data;
+      if (!settings.sheet || data.sheets.indexOf(settings.sheet) === -1) settings.sheet = '';
+      renderConfig();
+      flushQueue(true);
+    }).catch(function (err) {
+      $('sheetLine').textContent = 'Offline — entries will be queued';
+      toast(err.message, 'err');
+    });
+  }
+
+  function renderConfig() {
+    if (!config) return;
+    var neg = function (el, value) { el.classList.toggle('neg', typeof value === 'number' && value < 0); };
+    $('balCash').textContent = peso(config.balances.cash);
+    $('balEmoney').textContent = peso(config.balances.emoney);
+    neg($('balCash'), config.balances.cash);
+    neg($('balEmoney'), config.balances.emoney);
+    $('sheetLine').textContent = (settings.sheet || config.activeSheet) + ' · ' + config.rowsUsed + ' rows';
+    $('sheetTitle').textContent = 'Add record';
+
+    renderTypes(config.types && config.types.length ? config.types : FALLBACK_TYPES);
+
+    var list = $('customerList');
+    list.innerHTML = '';
+    (config.customers || []).forEach(function (name) {
+      var option = document.createElement('option');
+      option.value = name;
+      list.appendChild(option);
+    });
+
+    var chips = $('customerChips');
+    chips.innerHTML = '';
+    (config.customers || []).slice(0, 6).forEach(function (name) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip';
+      chip.textContent = name;
+      chip.addEventListener('click', function () { $('customer').value = name; });
+      chips.appendChild(chip);
+    });
+
+    var select = $('cfgSheet');
+    select.innerHTML = '<option value="">Auto (' + config.activeSheet + ')</option>';
+    (config.sheets || []).forEach(function (name) {
+      var option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      if (name === settings.sheet) option.selected = true;
+      select.appendChild(option);
+    });
+    updatePreview();
+  }
+
+  function renderTypes(types) {
+    var seg = $('typeSeg');
+    seg.innerHTML = '';
+    if (types.indexOf(selectedType) === -1) selectedType = types[0];
+    types.forEach(function (type) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = type;
+      button.setAttribute('aria-pressed', String(type === selectedType));
+      button.addEventListener('click', function () {
+        selectedType = type;
+        Array.prototype.forEach.call(seg.children, function (child) {
+          child.setAttribute('aria-pressed', String(child === button));
+        });
+        updatePreview();
+      });
+      seg.appendChild(button);
+    });
+  }
+
+  /* ---------------------------------------------------------- preview */
+  function estimateFee(amount) {
+    if (!amount || amount <= 0) return null;
+    if (selectedType === 'Fund In' || selectedType === 'Expense') return 0;
+    var card = (config && config.rateCard) || [];
+    for (var i = 0; i < card.length; i++) {
+      if (amount >= card[i].min && amount <= card[i].max) return card[i].fee;
+    }
+    if (card.length) {
+      var top = card[card.length - 1];
+      if (amount > top.max) return Math.round(amount * 0.02 - 10);
+    }
+    return null;
+  }
+
+  function amountValue() {
+    var raw = $('amount').value.replace(/[^0-9.]/g, '');
+    var value = parseFloat(raw);
+    return isFinite(value) ? value : 0;
+  }
+
+  function updatePreview() {
+    var amount = amountValue();
+    var el = $('preview');
+    if (!amount) { el.textContent = 'Enter an amount to see the fee.'; return; }
+    var fee = estimateFee(amount);
+    var line = selectedType + ' of <b>' + peso(amount) + '</b>';
+    line += fee === null ? ' · fee computed by the sheet'
+          : fee === 0 ? ' · no fee'
+          : ' · fee <b>' + peso(fee) + '</b>';
+    el.innerHTML = line + '<br><span class="tiny muted">Cash and e-money columns are calculated by the spreadsheet’s own formulas.</span>';
+  }
+
+  /* ----------------------------------------------------------- submit */
+  function submit() {
+    if (sending) return;
+    var amount = amountValue();
+    if (!amount) { toast('Enter an amount first.', 'err'); $('amount').focus(); return; }
+    if (!$('date').value) { toast('Pick a date.', 'err'); return; }
+
+    var record = {
+      action: 'append',
+      clientId: uuid(),
+      date: $('date').value,
+      type: selectedType,
+      customer: $('customer').value.trim(),
+      amount: amount,
+      notes: $('notes').value.trim(),
+      sheet: settings.sheet || ''
+    };
+
+    sending = true;
+    $('submit').disabled = true;
+    $('submit').textContent = 'Saving…';
+
+    call(record).then(function (data) {
+      config = config || { balances: {} };
+      config.balances = data.balances;
+      config.rowsUsed = (config.rowsUsed || 0) + 1;
+      renderConfig();
+      resetForm();
+      toast('Saved to ' + data.sheet + ' row ' + data.row +
+            (data.fee ? ' · fee ' + peso(data.fee) : '') +
+            ' · cash ' + peso(data.balances.cash) + ' · e-money ' + peso(data.balances.emoney), 'ok');
+      loadConfig();
+    }).catch(function (err) {
+      var pending = queue();
+      pending.push(record);
+      setQueue(pending);
+      resetForm();
+      toast('Not sent (' + err.message + ') — saved on this phone, will retry.', 'warn');
+    }).then(function () {
+      sending = false;
+      $('submit').disabled = false;
+      $('submit').textContent = 'Add record';
+    });
+  }
+
+  function resetForm() {
+    $('amount').value = '';
+    $('customer').value = '';
+    $('notes').value = '';
+    $('date').value = todayISO();
+    updatePreview();
+  }
+
+  /* ------------------------------------------------------------ queue */
+  function renderQueue() {
+    var pending = queue();
+    $('queueCard').hidden = pending.length === 0;
+    $('queueCount').textContent = pending.length;
+  }
+
+  function flushQueue(quiet) {
+    var pending = queue();
+    if (!pending.length) return Promise.resolve();
+    var record = pending[0];
+    return call(record).then(function () {
+      setQueue(queue().slice(1));
+      return flushQueue(quiet);
+    }).then(function () {
+      if (!queue().length) {
+        if (!quiet) toast('Queued records sent.', 'ok');
+        loadConfig();
+      }
+    }).catch(function (err) {
+      if (!quiet) toast('Still cannot reach the script: ' + err.message, 'err');
+    });
+  }
+
+  /* ------------------------------------------------------------- boot */
+  function bindEvents() {
+    $('setupSave').addEventListener('click', function () {
+      var url = $('setupUrl').value.trim();
+      if (!/^https:\/\/script\.google\.com\/.*\/exec$/.test(url)) {
+        toast('That does not look like a Web App /exec URL.', 'err');
+        return;
+      }
+      settings.url = url;
+      settings.secret = $('setupSecret').value.trim();
+      save(STORE, settings);
+      show('app');
+      loadConfig();
+    });
+
+    $('openSettings').addEventListener('click', function () {
+      $('cfgUrl').value = settings.url;
+      $('cfgSecret').value = settings.secret;
+      show('settings');
+    });
+    $('closeSettings').addEventListener('click', function () { show('app'); });
+
+    $('cfgSave').addEventListener('click', function () {
+      settings.url = $('cfgUrl').value.trim();
+      settings.secret = $('cfgSecret').value.trim();
+      settings.sheet = $('cfgSheet').value;
+      save(STORE, settings);
+      show('app');
+      loadConfig();
+    });
+
+    $('cfgForget').addEventListener('click', function () {
+      if (!confirm('Remove the saved URL and secret from this phone?')) return;
+      localStorage.removeItem(STORE);
+      settings = { url: '', secret: '', sheet: '' };
+      show('setup');
+    });
+
+    $('refresh').addEventListener('click', function () { loadConfig(); });
+    $('submit').addEventListener('click', submit);
+    $('amount').addEventListener('input', updatePreview);
+    $('todayBtn').addEventListener('click', function () { $('date').value = todayISO(); });
+    $('queueRetry').addEventListener('click', function () { flushQueue(false); });
+    $('queueClear').addEventListener('click', function () {
+      if (confirm('Discard the records waiting to send?')) setQueue([]);
+    });
+
+    var chips = $('amountChips');
+    AMOUNT_CHIPS.forEach(function (value) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip';
+      chip.textContent = peso(value);
+      chip.addEventListener('click', function () {
+        $('amount').value = String(value);
+        updatePreview();
+      });
+      chips.appendChild(chip);
+    });
+
+    $('form').addEventListener('submit', function (event) { event.preventDefault(); submit(); });
+    window.addEventListener('online', function () { flushQueue(true); });
+  }
+
+  bindEvents();
+  renderTypes(FALLBACK_TYPES);
+  renderQueue();
+  $('date').value = todayISO();
+  if (settings.url) { show('app'); loadConfig(); } else { show('setup'); }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(function () {});
+  }
+})();
+</script>
+</body>
+</html>
