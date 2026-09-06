@@ -617,10 +617,16 @@
     editing = {
       sheet: row.sheet || settings.sheet || (config && config.activeSheet) || '',
       row: row.row,
-      expect: { date: row.date, amount: row.amount }
+      expect: { date: row.date, amount: row.amount, customer: row.customer || '' }
     };
     selectedType = row.type;
-    renderTypes(config && config.types && config.types.length ? config.types : FALLBACK_TYPES);
+    // The record's own type must stay selectable even if it isn't in the
+    // currently-loaded type list (e.g. a one-off category not seen recently) —
+    // otherwise renderTypes silently falls back to types[0] and Save would
+    // overwrite the row with the wrong type.
+    var types = (config && config.types && config.types.length ? config.types : FALLBACK_TYPES).slice();
+    if (row.type && types.indexOf(row.type) === -1) types.push(row.type);
+    renderTypes(types);
     $('amount').value = row.amount === null ? '' : String(row.amount);
     $('customer').value = row.customer || '';
     $('date').value = row.date || todayISO();

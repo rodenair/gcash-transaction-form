@@ -177,6 +177,15 @@ function timezone_() {
   return book_().getSpreadsheetTimeZone() || Session.getScriptTimeZone() || 'Asia/Manila';
 }
 
+/** The log a request should act on: the named sheet if given, else the auto pick. */
+function resolveLog_(logs, sheetName, isoDate) {
+  var log = sheetName
+    ? logs.filter(function (l) { return l.name === sheetName; })[0]
+    : pickLogSheet_(logs, isoDate);
+  if (!log) throw new Error('Sheet not found: ' + sheetName);
+  return log;
+}
+
 /* -------------------------------------------------------------- read side */
 
 function getConfig_() {
@@ -284,10 +293,7 @@ function appendTransaction_(body) {
   lock.waitLock(20000);
   try {
     var logs = logSheets_();
-    var log = body.sheet
-      ? logs.filter(function (l) { return l.name === body.sheet; })[0]
-      : pickLogSheet_(logs, isoDate);
-    if (!log) throw new Error('Sheet not found: ' + body.sheet);
+    var log = resolveLog_(logs, body.sheet, isoDate);
 
     var sheet = log.sheet, cols = log.cols, hRow = log.headerRow;
     var lastRow = lastDataRow_(sheet, cols, hRow);
@@ -340,46 +346,65 @@ function appendTransaction_(body) {
 /** The most recent rows of a sheet, newest first, for the phone's list. */
 function listTransactions_(body) {
   var logs = logSheets_();
-  var log = body.sheet
-    ? logs.filter(function (l) { return l.name === body.sheet; })[0]
-    : pickLogSheet_(logs);
-  if (!log) throw new Error('Sheet not found: ' + body.sheet);
+  var log = resolveLog_(logs, body.sheet);
 
   var limit = Math.min(Math.max(Number(body.limit) || 25, 1), 100);
   var lastRow = lastDataRow_(log.sheet, log.cols, log.headerRow);
+  var firstRow = Math.max(log.headerRow + 1, lastRow - limit + 1);
+  if (firstRow > lastRow) return { ok: true, sheet: log.name, rows: [] };
+
+  // One pair of range reads for the whole block instead of one per cell per
+  // row — a 100-row list would otherwise cost ~1000 individual Sheets calls.
+  var block = readBlock_(log.sheet, firstRow, lastRow - firstRow + 1);
   var rows = [];
-  for (var row = lastRow; row > log.headerRow && rows.length < limit; row--) {
-    rows.push(rowValues_(log.sheet, log.cols, row));
+  for (var row = lastRow; row >= firstRow; row--) {
+    var i = row - firstRow;
+    rows.push(rowFromBlock_(log.cols, log.name, row, block.values[i], block.formulas[i]));
   }
   return { ok: true, sheet: log.name, rows: rows };
 }
 
+/** Reads every column of `numRows` rows starting at `firstRow` in one shot. */
+function readBlock_(sheet, firstRow, numRows) {
+  var range = sheet.getRange(firstRow, 1, numRows, sheet.getLastColumn());
+  return { values: range.getValues(), formulas: range.getFormulas() };
+}
+
 /**
- * One row as the phone shows it. Cash Change and E-Money Change report whether
- * they still hold a formula, so editing a row does not silently freeze a
- * calculated cell into a typed-in number.
+ * One row as the phone shows it, built from an already-fetched row of values
+ * and formulas (see readBlock_). Cash Change and E-Money Change report
+ * whether they still hold a formula, so editing a row does not silently
+ * freeze a calculated cell into a typed-in number.
  */
-function rowValues_(sheet, cols, row) {
-  var date = cols.date ? sheet.getRange(row, cols.date).getValue() : null;
+function rowFromBlock_(cols, sheetName, row, values, formulas) {
+  var cell = function (col) { return col ? values[col - 1] : null; };
+  var formula = function (col) { return col ? formulas[col - 1] : ''; };
+  var date = cell(cols.date);
   var out = {
     row: row,
+    sheet: sheetName,
     date: (date instanceof Date) ? Utilities.formatDate(date, timezone_(), 'yyyy-MM-dd') : '',
-    type: cols.type ? String(sheet.getRange(row, cols.type).getValue()) : '',
-    customer: cols.customer ? String(sheet.getRange(row, cols.customer).getValue()) : '',
-    amount: cols.amount ? numberOrNull_(sheet.getRange(row, cols.amount).getValue()) : null,
-    fee: cols.fee ? numberOrNull_(sheet.getRange(row, cols.fee).getValue()) : null,
-    notes: cols.notes ? String(sheet.getRange(row, cols.notes).getValue()) : '',
+    type: cols.type ? String(cell(cols.type)) : '',
+    customer: cols.customer ? String(cell(cols.customer)) : '',
+    amount: cols.amount ? numberOrNull_(cell(cols.amount)) : null,
+    fee: cols.fee ? numberOrNull_(cell(cols.fee)) : null,
+    notes: cols.notes ? String(cell(cols.notes)) : '',
     balances: {
-      cash: cols.cashBalance ? numberOrNull_(sheet.getRange(row, cols.cashBalance).getValue()) : null,
-      emoney: cols.emoneyBalance ? numberOrNull_(sheet.getRange(row, cols.emoneyBalance).getValue()) : null
+      cash: cols.cashBalance ? numberOrNull_(cell(cols.cashBalance)) : null,
+      emoney: cols.emoneyBalance ? numberOrNull_(cell(cols.emoneyBalance)) : null
     }
   };
   ['cashChange', 'emoneyChange'].forEach(function (key) {
     if (!cols[key]) { out[key] = { value: null, calculated: false }; return; }
-    var cell = sheet.getRange(row, cols[key]);
-    out[key] = { value: numberOrNull_(cell.getValue()), calculated: !!cell.getFormula() };
+    out[key] = { value: numberOrNull_(cell(cols[key])), calculated: !!formula(cols[key]) };
   });
   return out;
+}
+
+/** One row as the phone shows it, read directly from the sheet (single row). */
+function rowValues_(sheet, cols, row, sheetName) {
+  var block = readBlock_(sheet, row, 1);
+  return rowFromBlock_(cols, sheetName || '', row, block.values[0], block.formulas[0]);
 }
 
 /**
@@ -389,22 +414,24 @@ function rowValues_(sheet, cols, row) {
  */
 function locateRow_(body) {
   var logs = logSheets_();
-  var log = body.sheet
-    ? logs.filter(function (l) { return l.name === body.sheet; })[0]
-    : pickLogSheet_(logs);
-  if (!log) throw new Error('Sheet not found: ' + body.sheet);
+  var log = resolveLog_(logs, body.sheet);
 
   var row = Number(body.row);
   var lastRow = lastDataRow_(log.sheet, log.cols, log.headerRow);
   if (!row || row <= log.headerRow || row > lastRow) throw new Error('Row ' + body.row + ' is not a transaction row.');
 
-  var current = rowValues_(log.sheet, log.cols, row);
+  var current = rowValues_(log.sheet, log.cols, row, log.name);
   var expect = body.expect || {};
   if (expect.date && expect.date !== current.date) {
     throw new Error('That row now holds a different date. Refresh the list and try again.');
   }
   if (expect.amount !== undefined && expect.amount !== null && Number(expect.amount) !== current.amount) {
     throw new Error('That row now holds a different amount. Refresh the list and try again.');
+  }
+  // Date + amount alone can collide (e.g. two same-day, same-amount "Load"
+  // transactions) — customer narrows that further when the phone sent it.
+  if (expect.customer !== undefined && expect.customer !== null && String(expect.customer) !== current.customer) {
+    throw new Error('That row now holds a different customer. Refresh the list and try again.');
   }
   return { log: log, row: row, current: current, firstDataRow: log.headerRow + 1, lastRow: lastRow };
 }
