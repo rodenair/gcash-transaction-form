@@ -84,7 +84,11 @@ const check = (label, actual, expected) => {
 
   await page.waitForSelector('#setupPin:not([hidden])');
   check('no PIN yet → PIN screen, not a URL box', await page.isVisible('#setupDirect'), false);
-  check('PIN screen explains where the PIN comes from', (await page.textContent('#setupHelp')).includes('FORM_PIN'), true);
+  check('PIN screen is bare: no placeholder, no help text, no escape hatch', [
+    await page.getAttribute('#setupPinInput', 'placeholder'),
+    (await page.textContent('#setupHelp')).trim(),
+    await page.locator('#setupToggle').count()
+  ], [null, '', 0]);
 
   await page.fill('#setupPinInput', '9999');
   await page.click('#setupSave');

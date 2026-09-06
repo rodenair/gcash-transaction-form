@@ -75,6 +75,7 @@
 
   .field { margin-bottom: 14px; }
   .field:last-child { margin-bottom: 0; }
+  #setup .btn { margin-top: 18px; }
 
   .preview { background: var(--panel-2); border-radius: 12px; padding: 11px 13px; font-size: 14px; }
   .preview b { font-variant-numeric: tabular-nums; }
@@ -114,7 +115,7 @@
     <div id="setupPin" hidden>
       <div class="field">
         <label for="setupPinInput">PIN</label>
-        <input id="setupPinInput" type="password" inputmode="text" autocomplete="off" placeholder="The FORM_PIN set on the server">
+        <input id="setupPinInput" type="password" inputmode="text" autocomplete="off">
       </div>
     </div>
 
@@ -131,7 +132,6 @@
 
     <button class="btn" id="setupSave">Connect</button>
     <p class="small muted" id="setupHelp" style="margin-bottom:0"></p>
-    <button class="link" id="setupToggle" style="margin-top:10px"></button>
   </div>
 </section>
 
@@ -552,9 +552,6 @@
       });
     });
 
-    $('setupToggle').addEventListener('click', function () {
-      showSetup(setupMode === 'pin' ? 'direct' : 'pin');
-    });
 
     $('openSettings').addEventListener('click', function () {
       $('cfgUrl').value = settings.url;
@@ -643,11 +640,8 @@
     $('setupDirect').hidden = pin;
     $('setupTitle').textContent = pin ? 'Enter your PIN' : 'Connect your tracker';
     $('setupHelp').textContent = pin
-      ? 'The PIN is the FORM_PIN environment variable on this site. It is saved on this phone only.'
+      ? ''
       : 'This page has no server behind it, so it talks to Apps Script directly. Deployment steps are in the README.';
-    $('setupToggle').textContent = pin
-      ? 'Connect straight to Apps Script instead'
-      : 'Use a PIN instead';
     show('setup');
   }
 
