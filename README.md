@@ -4,9 +4,14 @@ A one-screen web form for adding a record to the **R&S Sari-Sari Store — GCash
 spreadsheet, so you never have to edit the sheet itself on a phone.
 
 The form posts JSON to a Google Apps Script Web App bound to the spreadsheet. The script appends a
-row filling only the typed columns — Date, Type, Customer / Ref, Amount, Notes — and lets the
-spreadsheet's own formulas calculate Cash Change, E-Money Change, Fee, both running balances and
-Month, exactly as when you type a row by hand.
+row filling the typed columns — Date, Type, Customer / Ref, Amount, Cash Change, E-Money Change,
+Notes — and lets the spreadsheet's own formulas calculate Fee, both running balances and Month,
+exactly as when you type a row by hand.
+
+Cash Change and E-Money Change are typed rather than derived because the fee is sometimes collected
+in cash and sometimes taken out of the wallet: a ₱500 cash-out is `−490 / +500` one day and
+`−500 / +510` the next. The form suggests the cash-collected version and you edit either side; leave
+a field blank and that cell keeps the sheet's formula instead.
 
 ```
 phone (index.html) ──POST /api/log──▶ Vercel function ──POST JSON──▶ Apps Script ──▶ Daily Log
@@ -25,6 +30,8 @@ secret typed into the phone instead.
 - Type, amount, customer, date and notes on one screen, with big touch targets.
 - Quick-amount chips and a recent-customer list pulled from the sheet itself.
 - Live fee preview read from your **Rate Card** sheet (2% − ₱10 above the top bracket).
+- Cash and e-money change typed per record, each with a +/− toggle, suggested from the type and
+  amount and overridable — **Recalculate** puts the suggestion back.
 - Shows the current cash and e-money balances before and after each save.
 - Picks the right monthly sheet automatically — the one whose latest entry is in the same month as
   the record you are adding. You can override it in Settings.
@@ -109,11 +116,16 @@ it keeps the request "simple" so the browser skips the CORS preflight that Apps 
 ```jsonc
 // Add a record
 { "action": "append", "token": "…", "clientId": "x-abc123",
-  "date": "2026-09-05", "type": "Cash In", "customer": "Iresh",
-  "amount": 500, "notes": "", "sheet": "" }
+  "date": "2026-09-05", "type": "Cash Out", "customer": "Iresh",
+  "amount": 500, "cashChange": -500, "emoneyChange": 510,
+  "notes": "", "sheet": "" }
+
+// cashChange / emoneyChange: a number is written to that cell; null or ""
+// leaves the sheet's formula in place. 0 is a value, not a blank.
 
 // → { "ok": true, "sheet": "Sep 2026", "row": 10, "fee": 10,
-//     "balances": { "cash": 22340, "emoney": 44220 } }
+//     "changes": { "cash": -500, "emoney": 510 },
+//     "balances": { "cash": 21330, "emoney": 45230 } }
 ```
 
 ```jsonc
@@ -134,7 +146,10 @@ failures.
 - Calculated columns are copied from the nearest row above that still holds formulas, so a row you
   once overwrote by hand does not become the template for new ones.
 - The fee shown on the phone is a preview from the Rate Card. The value written to the sheet is
-  always the one the sheet's own formula produces.
+  always the one the sheet's own formula produces — the fee column stays calculated.
+- The suggested changes assume the fee is collected in cash: Cash In `+(amount + fee) / −amount`,
+  Cash Out `−(amount − fee) / +amount`, Fund In `0 / +amount`, Expense `−amount / 0`. When the fee
+  comes out of the wallet instead, retype the side that differs.
 - The script only ever appends after the last dated row; it never edits or deletes existing rows.
 - The PIN gates the proxy, and the proxy is the only thing that knows the Apps Script URL. Change
   the PIN by editing `FORM_PIN` and redeploying; every phone then has to type the new one.

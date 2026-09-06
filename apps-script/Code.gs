@@ -6,9 +6,12 @@
  * then Deploy > New deployment > Web app > Execute as ME, access ANYONE.
  * Paste the /exec URL into the form's setup screen.
  *
- * The form only ever fills the typed columns (Date, Type, Customer, Amount, Notes).
- * Every calculated column keeps the spreadsheet's own formulas — they are copied
- * down from the last row that still has them.
+ * The form fills the typed columns (Date, Type, Customer, Amount, Notes) and,
+ * when the phone sends them, Cash Change and E-Money Change — the fee is
+ * sometimes paid in cash and sometimes taken from the wallet, so those two are
+ * not derivable. Leave them out and the sheet's own formulas fill them instead.
+ * Every other calculated column keeps its formula, copied down from the last row
+ * that still has one.
  */
 
 var SETTINGS = {
@@ -105,6 +108,8 @@ function columns_(sheet, hRow) {
     else if (name === 'type') cols.type = col;
     else if (name.indexOf('customer') === 0) cols.customer = col;
     else if (name === 'amount') cols.amount = col;
+    else if (name === 'cash change') cols.cashChange = col;
+    else if (name === 'e-money change') cols.emoneyChange = col;
     else if (name === 'fee') cols.fee = col;
     else if (name === 'cash balance') cols.cashBalance = col;
     else if (name === 'e-money balance') cols.emoneyBalance = col;
@@ -198,6 +203,13 @@ function numberOrNull_(value) {
   return (typeof value === 'number' && isFinite(value)) ? value : null;
 }
 
+/** Parses a value the phone sent. Blank, null or absent all mean "not given". */
+function number_(value) {
+  if (value === null || value === undefined || value === '') return null;
+  var parsed = Number(value);
+  return isFinite(parsed) ? parsed : null;
+}
+
 function typesFrom_(log) {
   var types = DEFAULT_TYPES.slice();
   var row = lastDataRow_(log.sheet, log.cols, log.headerRow);
@@ -285,13 +297,23 @@ function appendTransaction_(body) {
     var targetRow = lastRow + 1;
     if (targetRow > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 1);
 
-    fillFormulas_(sheet, cols, hRow, lastRow, targetRow);
+    // Typed-in changes replace the formula in those cells; anything left blank
+    // on the phone keeps whatever the sheet calculates.
+    var cashChange = number_(body.cashChange);
+    var emoneyChange = number_(body.emoneyChange);
+    var typedIn = [];
+    if (cols.cashChange && cashChange !== null) typedIn.push(cols.cashChange);
+    if (cols.emoneyChange && emoneyChange !== null) typedIn.push(cols.emoneyChange);
+
+    fillFormulas_(sheet, cols, hRow, lastRow, targetRow, typedIn);
 
     var parts = isoDate.split('-');
     sheet.getRange(targetRow, cols.date).setValue(new Date(+parts[0], +parts[1] - 1, +parts[2]));
     sheet.getRange(targetRow, cols.type).setValue(type);
     if (cols.customer) sheet.getRange(targetRow, cols.customer).setValue(String(body.customer || '').trim());
     sheet.getRange(targetRow, cols.amount).setValue(amount);
+    if (cols.cashChange && cashChange !== null) sheet.getRange(targetRow, cols.cashChange).setValue(cashChange);
+    if (cols.emoneyChange && emoneyChange !== null) sheet.getRange(targetRow, cols.emoneyChange).setValue(emoneyChange);
     if (cols.notes) sheet.getRange(targetRow, cols.notes).setValue(String(body.notes || '').trim());
 
     SpreadsheetApp.flush();
@@ -301,6 +323,10 @@ function appendTransaction_(body) {
       sheet: log.name,
       row: targetRow,
       fee: cols.fee ? numberOrNull_(sheet.getRange(targetRow, cols.fee).getValue()) : null,
+      changes: {
+        cash: cols.cashChange ? numberOrNull_(sheet.getRange(targetRow, cols.cashChange).getValue()) : null,
+        emoney: cols.emoneyChange ? numberOrNull_(sheet.getRange(targetRow, cols.emoneyChange).getValue()) : null
+      },
       balances: {
         cash: cols.cashBalance ? numberOrNull_(sheet.getRange(targetRow, cols.cashBalance).getValue()) : null,
         emoney: cols.emoneyBalance ? numberOrNull_(sheet.getRange(targetRow, cols.emoneyBalance).getValue()) : null
@@ -319,8 +345,8 @@ function appendTransaction_(body) {
  * they are copied from the nearest row above that still has them, so a row the
  * owner once overwrote by hand does not become the template.
  */
-function fillFormulas_(sheet, cols, hRow, lastRow, targetRow) {
-  var typed = inputCols_(cols);
+function fillFormulas_(sheet, cols, hRow, lastRow, targetRow, typedIn) {
+  var typed = inputCols_(cols).concat(typedIn || []);
   var calculated = cols.all
     .map(function (h) { return h.col; })
     .filter(function (col) { return typed.indexOf(col) === -1; });

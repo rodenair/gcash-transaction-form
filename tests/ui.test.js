@@ -106,13 +106,40 @@ const check = (label, actual, expected) => {
     return [s.mode, s.pin, s.url, s.secret];
   }), ['proxy', PIN, '', '']);
 
+  // Cash In: the suggestion assumes the fee lands in the till.
   await page.fill('#amount', '500');
+  check('changes are suggested from type and amount', [
+    await page.getAttribute('#cashSign', 'data-sign'), await page.inputValue('#cashChange'),
+    await page.getAttribute('#emoneySign', 'data-sign'), await page.inputValue('#emoneyChange')
+  ], ['+', '510', '-', '500']);
+  check('preview shows what will be written', (await page.textContent('#preview')).includes('cash +₱510'), true);
+
+  await page.click('#typeSeg button:nth-child(2)'); // Cash Out
+  check('switching type re-suggests', [await page.inputValue('#cashChange'), await page.inputValue('#emoneyChange')], ['490', '500']);
+  await page.click('#typeSeg button:nth-child(1)'); // back to Cash In
+
+  // The fee came out of the wallet on this one, so both sides get retyped.
+  await page.fill('#cashChange', '500');
+  await page.fill('#emoneyChange', '490');
+  await page.click('#emoneySign');
+  check('sign toggle flips the field', await page.getAttribute('#emoneySign', 'data-sign'), '+');
+  await page.fill('#amount', '500');
+  check('a typed change is not overwritten by the suggestion',
+    [await page.inputValue('#cashChange'), await page.inputValue('#emoneyChange')], ['500', '490']);
+  await page.click('#autoChanges');
+  check('Recalculate restores the suggestion',
+    [await page.inputValue('#cashChange'), await page.inputValue('#emoneyChange')], ['510', '500']);
+
+  await page.fill('#cashChange', '500');
+  await page.fill('#emoneyChange', '490');
+  await page.click('#emoneySign');
   await page.click('#customerChips .chip >> nth=1');
   await page.click('#submit');
   await page.waitForFunction(() => document.getElementById('toast').className.includes('ok'));
   const sent = upstream.find(p => p.action === 'append');
   check('record forwarded with the server-side secret', [sent.type, sent.amount, sent.customer, sent.token],
     ['Cash In', 500, 'Iresh', 'apps-script-secret']);
+  check('hand-typed changes are what get sent', [sent.cashChange, sent.emoneyChange], [500, 490]);
   check('PIN stripped before Apps Script', sent.pin, undefined);
   check('success toast names the row', (await page.textContent('#toast')).includes('Saved to Sep 2026 row 10'), true);
 

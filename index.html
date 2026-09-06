@@ -77,6 +77,17 @@
   .field:last-child { margin-bottom: 0; }
   #setup .btn { margin-top: 18px; }
 
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .signed { display: flex; gap: 6px; }
+  .signed input { padding-left: 10px; font-variant-numeric: tabular-nums; }
+  .sign {
+    flex: 0 0 46px; border: 1px solid var(--line); background: var(--panel-2);
+    border-radius: 12px; font-size: 19px; font-weight: 700; cursor: pointer;
+  }
+  .sign[data-sign="-"] { color: var(--bad); border-color: var(--bad); }
+  .sign[data-sign="+"] { color: var(--good); border-color: var(--good); }
+  .label-row { display: flex; justify-content: space-between; align-items: baseline; }
+
   .preview { background: var(--panel-2); border-radius: 12px; padding: 11px 13px; font-size: 14px; }
   .preview b { font-variant-numeric: tabular-nums; }
 
@@ -169,6 +180,29 @@
     </div>
 
     <div class="field">
+      <div class="label-row">
+        <label style="margin-bottom:6px">Change written to the sheet</label>
+        <button type="button" class="link" id="autoChanges" style="margin-bottom:6px">Recalculate</button>
+      </div>
+      <div class="pair">
+        <div>
+          <div class="tiny muted" style="margin-bottom:5px">Cash</div>
+          <div class="signed">
+            <button type="button" class="sign" id="cashSign" data-sign="+" aria-label="Cash change direction">+</button>
+            <input id="cashChange" type="text" inputmode="decimal" autocomplete="off" aria-label="Cash change">
+          </div>
+        </div>
+        <div>
+          <div class="tiny muted" style="margin-bottom:5px">E-money</div>
+          <div class="signed">
+            <button type="button" class="sign" id="emoneySign" data-sign="-" aria-label="E-money change direction">&#8722;</button>
+            <input id="emoneyChange" type="text" inputmode="decimal" autocomplete="off" aria-label="E-money change">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
       <label for="customer">Customer / Ref</label>
       <input id="customer" type="text" list="customerList" autocomplete="off" placeholder="Optional">
       <datalist id="customerList"></datalist>
@@ -251,6 +285,7 @@
   var config = null;
   var selectedType = FALLBACK_TYPES[0];
   var setupMode = 'pin';
+  var edited = false;
   var sending = false;
 
   /* ------------------------------------------------------------ storage */
@@ -275,6 +310,10 @@
     var sign = value < 0 ? '-' : '';
     return sign + '₱' + Math.abs(value).toLocaleString('en-PH', { maximumFractionDigits: 2 });
   }
+  function signed(value) {
+    return (value > 0 ? '+' : value < 0 ? '\u2212' : '') + peso(Math.abs(value));
+  }
+
   function todayISO() {
     var d = new Date();
     return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -403,6 +442,7 @@
         Array.prototype.forEach.call(seg.children, function (child) {
           child.setAttribute('aria-pressed', String(child === button));
         });
+        applySuggestion(false);
         updatePreview();
       });
       seg.appendChild(button);
@@ -430,6 +470,56 @@
     return isFinite(value) ? value : 0;
   }
 
+  /* ------------------------------------------------- cash / e-money change */
+
+  function signOf(id) { return $(id).getAttribute('data-sign') === '-' ? -1 : 1; }
+
+  function setSign(id, sign) {
+    $(id).setAttribute('data-sign', sign < 0 ? '-' : '+');
+    $(id).textContent = sign < 0 ? '\u2212' : '+';
+  }
+
+  /** The signed number in a field, or null when it is blank. */
+  function changeValue(inputId, signId) {
+    var raw = $(inputId).value.replace(/[^0-9.]/g, '');
+    if (!raw) return null;
+    var value = parseFloat(raw);
+    return isFinite(value) ? signOf(signId) * value : null;
+  }
+
+  function setChange(inputId, signId, value) {
+    if (value === null) { $(inputId).value = ''; setSign(signId, 1); return; }
+    setSign(signId, value < 0 ? -1 : 1);
+    $(inputId).value = String(Math.abs(value));
+  }
+
+  /**
+   * A starting point for the two change columns, assuming the fee is collected
+   * in cash. When it comes out of the wallet instead, the numbers get edited by
+   * hand — which is the whole reason these fields exist.
+   */
+  function suggestChanges() {
+    var amount = amountValue();
+    if (!amount) return { cash: null, emoney: null };
+    var fee = estimateFee(amount) || 0;
+    switch (selectedType) {
+      case 'Cash In':  return { cash: amount + fee, emoney: -amount };
+      case 'Cash Out': return { cash: -(amount - fee), emoney: amount };
+      case 'Fund In':  return { cash: 0, emoney: amount };
+      case 'Load':     return { cash: amount + fee, emoney: -amount };
+      case 'Expense':  return { cash: -amount, emoney: 0 };
+      default:         return { cash: null, emoney: null };
+    }
+  }
+
+  function applySuggestion(force) {
+    if (edited && !force) return;
+    var suggested = suggestChanges();
+    setChange('cashChange', 'cashSign', suggested.cash);
+    setChange('emoneyChange', 'emoneySign', suggested.emoney);
+    if (force) edited = false;
+  }
+
   function updatePreview() {
     var amount = amountValue();
     var el = $('preview');
@@ -439,7 +529,15 @@
     line += fee === null ? ' · fee computed by the sheet'
           : fee === 0 ? ' · no fee'
           : ' · fee <b>' + peso(fee) + '</b>';
-    el.innerHTML = line + '<br><span class="tiny muted">Cash and e-money columns are calculated by the spreadsheet’s own formulas.</span>';
+
+    var cash = changeValue('cashChange', 'cashSign');
+    var emoney = changeValue('emoneyChange', 'emoneySign');
+    var written = [];
+    if (cash !== null) written.push('cash <b>' + signed(cash) + '</b>');
+    if (emoney !== null) written.push('e-money <b>' + signed(emoney) + '</b>');
+    el.innerHTML = line + '<br><span class="tiny muted">' + (written.length
+      ? written.join(' · ')
+      : 'Cash and e-money left to the spreadsheet’s formulas.') + '</span>';
   }
 
   /* ----------------------------------------------------------- submit */
@@ -456,6 +554,8 @@
       type: selectedType,
       customer: $('customer').value.trim(),
       amount: amount,
+      cashChange: changeValue('cashChange', 'cashSign'),
+      emoneyChange: changeValue('emoneyChange', 'emoneySign'),
       notes: $('notes').value.trim(),
       sheet: settings.sheet || ''
     };
@@ -492,6 +592,8 @@
     $('customer').value = '';
     $('notes').value = '';
     $('date').value = todayISO();
+    edited = false;
+    applySuggestion(true);
     updatePreview();
   }
 
@@ -586,7 +688,27 @@
 
     $('refresh').addEventListener('click', function () { loadConfig(); });
     $('submit').addEventListener('click', submit);
-    $('amount').addEventListener('input', updatePreview);
+    $('amount').addEventListener('input', function () {
+      applySuggestion(false);
+      updatePreview();
+    });
+
+    ['cashChange', 'emoneyChange'].forEach(function (id) {
+      $(id).addEventListener('input', function () { edited = true; updatePreview(); });
+    });
+
+    [['cashSign', 'cashChange'], ['emoneySign', 'emoneyChange']].forEach(function (pair) {
+      $(pair[0]).addEventListener('click', function () {
+        setSign(pair[0], -signOf(pair[0]));
+        edited = true;
+        updatePreview();
+      });
+    });
+
+    $('autoChanges').addEventListener('click', function () {
+      applySuggestion(true);
+      updatePreview();
+    });
     $('todayBtn').addEventListener('click', function () { $('date').value = todayISO(); });
     $('queueRetry').addEventListener('click', function () { flushQueue(false); });
     $('queueClear').addEventListener('click', function () {
@@ -601,6 +723,7 @@
       chip.textContent = peso(value);
       chip.addEventListener('click', function () {
         $('amount').value = String(value);
+        applySuggestion(false);
         updatePreview();
       });
       chips.appendChild(chip);

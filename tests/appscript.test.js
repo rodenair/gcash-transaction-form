@@ -41,27 +41,33 @@ class FakeSheet {
   getDataRange() { return this.getRange(1, 1, this.getLastRow() || 1, COLS); }
   getRange(row, col, numRows = 1, numCols = 1) { return new FakeRange(this, row, col, numRows, numCols); }
   recalc() {
-    // Derived columns are recomputed for every row that carries a formula,
-    // exactly like the live sheet does.
+    // Derived columns are recomputed for every row that carries a formula. A
+    // Cash Change or E-Money Change typed in by hand has no formula, so the
+    // balances follow the typed number instead of the calculated one.
     let cash = this.opening.cash, emoney = this.opening.emoney;
     for (let r = 6; r <= this.grid.length; r++) {
       const date = this.cell(r, 1).value;
       const type = this.cell(r, 2).value;
       const amount = this.cell(r, 4).value;
       const has = c => !!this.cell(r, c).formula;
-      if (!has(5) && !has(7)) continue;
+      if (![5, 6, 7, 8, 9, 10].some(has)) continue;
       if (date === '' || date === null) {
         [5, 6, 7, 8, 9, 10].forEach(c => { if (has(c)) this.cell(r, c).value = ''; });
         continue;
       }
       const fee = feeFor(amount, type);
-      let cashChange = 0, emoneyChange = 0;
-      if (type === 'Cash In') { cashChange = amount + (fee || 0); emoneyChange = -amount; }
-      else if (type === 'Cash Out') { cashChange = -amount; emoneyChange = amount + (fee || 0); }
-      else if (type === 'Fund In') { emoneyChange = amount; }
-      else if (type === 'Load') { cashChange = amount + (fee || 0); }
-      else if (type === 'Expense') { cashChange = -amount; }
+      let derivedCash = 0, derivedEmoney = 0;
+      if (type === 'Cash In') { derivedCash = amount + (fee || 0); derivedEmoney = -amount; }
+      else if (type === 'Cash Out') { derivedCash = -amount; derivedEmoney = amount + (fee || 0); }
+      else if (type === 'Fund In') { derivedEmoney = amount; }
+      else if (type === 'Load') { derivedCash = amount + (fee || 0); }
+      else if (type === 'Expense') { derivedCash = -amount; }
+
+      const literal = c => (typeof this.cell(r, c).value === 'number' ? this.cell(r, c).value : 0);
+      const cashChange = has(5) ? derivedCash : literal(5);
+      const emoneyChange = has(6) ? derivedEmoney : literal(6);
       cash += cashChange; emoney += emoneyChange;
+
       if (has(5)) this.cell(r, 5).value = cashChange;
       if (has(6)) this.cell(r, 6).value = emoneyChange;
       if (has(7)) this.cell(r, 7).value = fee;
@@ -88,7 +94,7 @@ class FakeRange {
   }
   getValue() { return this.sheet.cell(this.row, this.col).value; }
   setValue(value) {
-    this.sheet.cell(this.row, this.col).value = value;
+    this.sheet.grid[this.row - 1][this.col - 1] = new Cell(value, '');
     this.sheet.recalc();
     return this;
   }
@@ -220,6 +226,47 @@ book.getSheets = () => [bare, rateSheet()];
 const onBare = appendTransaction_({ action: 'append', clientId: 'ghi', date: '2026-09-06', type: 'Cash In', amount: 100 });
 check('formulas copied down when the blank row had none', onBare.fee, 5);
 check('balance continued from the row above', onBare.balances.cash, 100 + 105 + 105);
+
+// A Cash Out where the fee comes out of the wallet, not the till: the two
+// change columns are typed in and must survive as values, not formulas.
+book.getSheets = () => [august, september, rateSheet(), new FakeSheet('Monthly Summary', 5)];
+const beforeManual = getConfig_().balances;
+const manual = appendTransaction_({
+  action: 'append', clientId: 'manual-1', date: '2026-09-06', type: 'Cash Out',
+  customer: 'Steph', amount: 500, cashChange: -500, emoneyChange: 510
+});
+check('typed changes are written as given', manual.changes, { cash: -500, emoney: 510 });
+check('typed cells hold values, not formulas',
+  [september.getRange(manual.row, 5).getFormula(), september.getRange(manual.row, 6).getFormula()], ['', '']);
+check('balances follow the typed changes',
+  [manual.balances.cash, manual.balances.emoney], [beforeManual.cash - 500, beforeManual.emoney + 510]);
+check('fee still comes from the rate card', manual.fee, 10);
+check('columns beside them keep their formulas',
+  september.getRange(manual.row, 8).getFormula() !== '', true);
+
+// Only one side typed in: the other keeps the sheet's formula.
+const half = appendTransaction_({
+  action: 'append', clientId: 'manual-2', date: '2026-09-06', type: 'Cash In',
+  amount: 100, cashChange: 105
+});
+check('one typed side, one calculated',
+  [september.getRange(half.row, 5).getFormula(), september.getRange(half.row, 6).getFormula() !== ''], ['', true]);
+check('typed cash change used verbatim', half.changes.cash, 105);
+
+// Zero is a value; blank means "let the sheet decide".
+const zero = appendTransaction_({
+  action: 'append', clientId: 'manual-3', date: '2026-09-06', type: 'Fund In',
+  amount: 5000, cashChange: 0, emoneyChange: 5000
+});
+check('zero is written rather than ignored', zero.changes.cash, 0);
+check('a zero cash change leaves the cash balance alone', zero.balances.cash, half.balances.cash);
+
+const blank = appendTransaction_({
+  action: 'append', clientId: 'manual-4', date: '2026-09-06', type: 'Cash In',
+  amount: 100, cashChange: '', emoneyChange: null
+});
+check('blank falls back to the sheet formulas',
+  [september.getRange(blank.row, 5).getFormula() !== '', september.getRange(blank.row, 6).getFormula() !== ''], [true, true]);
 
 check('bad amount rejected', (() => { try { appendTransaction_({ amount: 0, type: 'Cash In', date: '2026-09-06' }); } catch (e) { return e.message; } })(),
   'Amount must be a number greater than zero.');
