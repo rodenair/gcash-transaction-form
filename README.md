@@ -35,7 +35,8 @@ secret typed into the phone instead.
 - Shows the current cash and e-money balances before and after each save.
 - Picks the right monthly sheet automatically — the one whose latest entry is in the same month as
   the record you are adding. You can override it in Settings.
-- Queues records on this phone when the signal drops and retries them when you are back online.
+- **Recent** lists the last 25 rows of the sheet; tap one to edit it or delete it.
+- Queues new records on this phone when the signal drops and retries them when you are back online.
 - A repeated send never adds the row twice: each record carries a one-time id the script remembers
   for six hours.
 
@@ -94,6 +95,14 @@ deployment fails loudly instead of quietly becoming an open write endpoint on yo
 Pick a type, type the amount, optionally pick a customer, tap **Add record**. The confirmation
 names the sheet and row it landed on and the new balances. Everything else the sheet calculates.
 
+**Recent** shows the last 25 rows of the active sheet. Tapping one loads it into the form: change
+anything and **Save changes**, or **Delete this record** to remove the row (the rows below shift up,
+as they would in Sheets). **Cancel** goes back to adding.
+
+Editing a row that still holds formulas in Cash Change or E-Money Change leaves those cells blank on
+the phone, with the calculated value shown behind the cursor — type in one and it becomes a number,
+leave it and the formula survives.
+
 **Settings** lets you force a specific sheet (useful for backdating into a closed month), change
 the URL or secret, or disconnect the phone.
 
@@ -129,6 +138,27 @@ it keeps the request "simple" so the browser skips the CORS preflight that Apps 
 ```
 
 ```jsonc
+// The rows behind the Recent list, newest first
+{ "action": "list", "token": "…", "sheet": "", "limit": 25 }
+
+// → { "ok": true, "sheet": "Sep 2026", "rows": [
+//      { "row": 9, "date": "2026-09-05", "type": "Cash Out", "customer": "Steph",
+//        "amount": 1000, "fee": 15, "notes": "",
+//        "cashChange": { "value": -1000, "calculated": false },
+//        "emoneyChange": { "value": 1015, "calculated": false },
+//        "balances": { "cash": 20830, "emoney": 45735 } } ] }
+
+// Edit or remove one. `expect` is the date and amount the phone had on screen:
+// if the row no longer matches, the write is refused instead of hitting the
+// wrong transaction. A blank cashChange/emoneyChange leaves that cell untouched.
+{ "action": "update", "token": "…", "clientId": "x-abc123", "sheet": "Sep 2026",
+  "row": 9, "expect": { "date": "2026-09-05", "amount": 1000 }, "amount": 1200 }
+
+{ "action": "delete", "token": "…", "clientId": "x-abc124", "sheet": "Sep 2026",
+  "row": 9, "expect": { "date": "2026-09-05", "amount": 1000 } }
+```
+
+```jsonc
 // Everything the form needs to render
 { "action": "config", "token": "…" }
 
@@ -150,7 +180,14 @@ failures.
 - The suggested changes assume the fee is collected in cash: Cash In `+(amount + fee) / −amount`,
   Cash Out `−(amount − fee) / +amount`, Fund In `0 / +amount`, Expense `−amount / 0`. When the fee
   comes out of the wallet instead, retype the side that differs.
-- The script only ever appends after the last dated row; it never edits or deletes existing rows.
+- Edits and deletes carry the date and amount the phone was showing, and are refused if the row no
+  longer matches — rows move when the sheet is edited elsewhere.
+- The first data row cannot be deleted: the running balances start there, and removing it would
+  leave the next row pointing at the header. Edit it instead.
+- Only new records are queued when the connection drops. An edit is tied to a row number that may
+  mean something different later, so a failed edit is reported rather than retried silently.
+- `clientId` makes a retried write a no-op for six hours, so a flaky connection cannot delete two
+  rows or apply an edit twice.
 - The PIN gates the proxy, and the proxy is the only thing that knows the Apps Script URL. Change
   the PIN by editing `FORM_PIN` and redeploying; every phone then has to type the new one.
 - Keep `sharedSecret` blank in the committed `Code.gs`. Set the real value in the Apps Script

@@ -29,6 +29,11 @@ class FakeSheet {
   insertRowsAfter(after, n) {
     for (let i = 0; i < n; i++) this.grid.push(Array.from({ length: COLS }, () => new Cell()));
   }
+  deleteRow(row) {
+    this.grid.splice(row - 1, 1);
+    this.grid.push(Array.from({ length: COLS }, () => new Cell()));
+    this.recalc();
+  }
   cell(r, c) { return this.grid[r - 1][c - 1]; }
   set(r, c, value, formula = '') { this.grid[r - 1][c - 1] = new Cell(value, formula); }
   getLastRow() {
@@ -267,6 +272,75 @@ const blank = appendTransaction_({
 });
 check('blank falls back to the sheet formulas',
   [september.getRange(blank.row, 5).getFormula() !== '', september.getRange(blank.row, 6).getFormula() !== ''], [true, true]);
+
+/* ------------------------------------------------ list, update, delete */
+
+book.getSheets = () => [august, september, rateSheet(), new FakeSheet('Monthly Summary', 5)];
+
+const listed = listTransactions_({ action: 'list', limit: 5 });
+check('list returns the newest first', listed.rows[0].row > listed.rows[1].row, true);
+check('list carries what the phone shows',
+  Object.keys(listed.rows[0]).sort(),
+  ['amount', 'balances', 'cashChange', 'customer', 'date', 'emoneyChange', 'fee', 'notes', 'row', 'type']);
+check('list flags cells that are still calculated',
+  listed.rows[listed.rows.length - 1].cashChange.calculated, true);
+check('list flags cells that were typed in',
+  listed.rows.find(r => r.customer === 'Steph').cashChange.calculated, false);
+
+const target = listed.rows.find(r => r.customer === 'Steph');
+const updated = updateTransaction_({
+  action: 'update', clientId: 'u-1', row: target.row, sheet: 'Sep 2026',
+  expect: { date: target.date, amount: target.amount },
+  amount: 800, customer: 'Stephanie', notes: 'corrected'
+});
+check('update rewrites the row it was given', updated.row, target.row);
+check('edited fields land in the sheet', [
+  september.getRange(target.row, 3).getValue(),
+  september.getRange(target.row, 4).getValue(),
+  september.getRange(target.row, 11).getValue()
+], ['Stephanie', 800, 'corrected']);
+check('untouched typed changes stay as they were', updated.changes, { cash: -500, emoney: 510 });
+check('fee follows the new amount', updated.fee, feeFor(800, 'Cash Out'));
+
+const stale = (() => {
+  try {
+    updateTransaction_({ action: 'update', row: target.row, sheet: 'Sep 2026',
+      expect: { date: target.date, amount: 500 }, amount: 900 });
+  } catch (e) { return e.message; }
+})();
+check('a row that moved is refused rather than overwritten', /different amount/.test(stale), true);
+check('the refused edit changed nothing', september.getRange(target.row, 4).getValue(), 800);
+
+check('a repeated update is not applied twice',
+  updateTransaction_({ action: 'update', clientId: 'u-1', row: target.row, amount: 999 }).duplicate, true);
+check('and the amount is untouched by the repeat', september.getRange(target.row, 4).getValue(), 800);
+
+const rowsBefore = listTransactions_({ action: 'list', limit: 50 }).rows.length;
+const balancesBefore = getConfig_().balances;
+const removed = deleteTransaction_({
+  action: 'delete', clientId: 'd-1', row: target.row, sheet: 'Sep 2026',
+  expect: { date: target.date, amount: 800 }
+});
+check('delete reports the row it removed', [removed.deleted, removed.row], [true, target.row]);
+check('the sheet is one row shorter', listTransactions_({ action: 'list', limit: 50 }).rows.length, rowsBefore - 1);
+check('that customer is gone', listTransactions_({ action: 'list', limit: 50 }).rows.some(r => r.customer === 'Stephanie'), false);
+check('balances drop the deleted row', removed.balances.cash !== balancesBefore.cash, true);
+check('a repeated delete does not remove a second row',
+  deleteTransaction_({ action: 'delete', clientId: 'd-1', row: target.row }).duplicate, true);
+
+const firstRow = september.getRange(6, 1).getValue();
+const refused = (() => {
+  try { deleteTransaction_({ action: 'delete', row: 6, sheet: 'Sep 2026' }); }
+  catch (e) { return e.message; }
+})();
+check('the first row is protected', /first row/.test(refused), true);
+check('and it is still there', september.getRange(6, 1).getValue(), firstRow);
+
+const offSheet = (() => {
+  try { updateTransaction_({ action: 'update', row: 3, sheet: 'Sep 2026', amount: 5 }); }
+  catch (e) { return e.message; }
+})();
+check('rows above the header are not editable', /not a transaction row/.test(offSheet), true);
 
 check('bad amount rejected', (() => { try { appendTransaction_({ amount: 0, type: 'Cash In', date: '2026-09-06' }); } catch (e) { return e.message; } })(),
   'Amount must be a number greater than zero.');

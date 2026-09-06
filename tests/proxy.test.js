@@ -57,6 +57,16 @@ function setEnv(overrides = {}) {
   await handler({ method: 'POST', body: { action: 'setSheet', pin: '4821' } }, r);
   check('unknown action rejected', [r.code, r.body.error], [400, 'Unknown action: setSheet']);
 
+  for (const action of ['list', 'update', 'delete']) {
+    r = res();
+    await handler({ method: 'POST', body: { action, pin: '4821', row: 10 } }, r);
+    check(`${action} is forwarded`, [r.code, upstream[upstream.length - 1].body.action], [200, action]);
+  }
+
+  r = res();
+  await handler({ method: 'POST', body: { action: 'delete', pin: 'nope', row: 10 } }, r);
+  check('a wrong PIN cannot delete', [r.code, r.body.needPin], [401, true]);
+
   r = res();
   await handler({ method: 'POST', body: JSON.stringify({ action: 'append', pin: '4821', amount: 50 }) }, r);
   check('string body parsed', [r.code, r.body.ok], [200, true]);

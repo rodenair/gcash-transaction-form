@@ -19,6 +19,17 @@ const CONFIG = {
   rateCard: [{ min: 1, max: 100, fee: 5 }, { min: 101, max: 500, fee: 10 }, { min: 501, max: 1000, fee: 15 }]
 };
 const APPENDED = { ok: true, sheet: 'Sep 2026', row: 10, fee: 10, balances: { cash: 22340, emoney: 44220 } };
+const ROWS = [
+  { row: 9, date: '2026-09-04', type: 'Cash Out', customer: 'Steph', amount: 1000, fee: 15, notes: 'fee from wallet',
+    cashChange: { value: -1000, calculated: false }, emoneyChange: { value: 1015, calculated: false },
+    balances: { cash: 20830, emoney: 45735 } },
+  { row: 8, date: '2026-09-04', type: 'Cash In', customer: 'Josh', amount: 390, fee: 10, notes: '',
+    cashChange: { value: 400, calculated: true }, emoneyChange: { value: -390, calculated: true },
+    balances: { cash: 21830, emoney: 44720 } }
+];
+const UPDATED = { ok: true, sheet: 'Sep 2026', row: 9, fee: 20, changes: { cash: -1200, emoney: 1220 },
+  balances: { cash: 20630, emoney: 45940 } };
+const DELETED = { ok: true, sheet: 'Sep 2026', row: 9, deleted: true, balances: { cash: 21830, emoney: 44720 } };
 
 process.env.SCRIPT_URL = EXEC;
 process.env.SHARED_SECRET = 'apps-script-secret';
@@ -28,7 +39,9 @@ const upstream = [];
 global.fetch = async (url, options) => {
   const body = JSON.parse(options.body);
   upstream.push(body);
-  return { text: async () => JSON.stringify(body.action === 'config' ? CONFIG : APPENDED) };
+  const reply = { config: CONFIG, list: { ok: true, sheet: 'Sep 2026', rows: ROWS },
+    update: UPDATED, delete: DELETED }[body.action] || APPENDED;
+  return { text: async () => JSON.stringify(reply) };
 };
 
 const handler = require('../api/log.js');
@@ -150,6 +163,83 @@ const check = (label, actual, expected) => {
   await page.reload();
   await page.waitForSelector('#app:not([hidden])');
   check('reload goes straight to the form', await page.isVisible('#setup'), false);
+  await page.close();
+
+  /* -------------------------------------------------- edit and delete */
+  page = await context.newPage();
+  page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+  await page.goto('http://localhost:8099/index.html');
+  await page.waitForSelector('#app:not([hidden])');
+
+  await page.click('#openRecent');
+  await page.waitForSelector('#recentList .entry');
+  check('recent list shows the rows', await page.locator('#recentList .entry').count(), 2);
+  const first = (await page.textContent('#recentList .entry >> nth=0'));
+  check('an entry names the record',
+    ['Cash Out', 'Steph', '2026-09-04', 'row 9', 'fee from wallet', '₱1,000', 'fee ₱15'].every(bit => first.includes(bit)),
+    true);
+
+  await page.click('#recentList .entry >> nth=0');
+  await page.waitForSelector('#editBanner:not([hidden])');
+  check('the record loads into the form', [
+    await page.inputValue('#amount'), await page.inputValue('#customer'),
+    await page.inputValue('#date'), await page.inputValue('#notes'),
+    await page.locator('#typeSeg button[aria-pressed="true"]').textContent()
+  ], ['1000', 'Steph', '2026-09-04', 'fee from wallet', 'Cash Out']);
+  check('typed-in changes load with their signs', [
+    await page.getAttribute('#cashSign', 'data-sign'), await page.inputValue('#cashChange'),
+    await page.getAttribute('#emoneySign', 'data-sign'), await page.inputValue('#emoneyChange')
+  ], ['-', '1000', '+', '1015']);
+  check('the button becomes Save changes', await page.textContent('#submit'), 'Save changes');
+  check('the banner names the row', await page.textContent('#editRowLabel'), 'Sep 2026 row 9');
+
+  await page.fill('#amount', '1200');
+  await page.click('#submit');
+  await page.waitForFunction(() => document.getElementById('toast').className.includes('ok'));
+  const edit = upstream.filter(p => p.action === 'update').pop();
+  check('an edit is sent as an update on that row', [edit.action, edit.row, edit.amount], ['update', 9, 1200]);
+  check('the edit carries what the row held when it was opened', edit.expect, { date: '2026-09-04', amount: 1000 });
+  check('the toast says updated', (await page.textContent('#toast')).includes('Updated Sep 2026 row 9'), true);
+  check('the form returns to adding', [await page.textContent('#submit'), await page.isVisible('#editBanner')],
+    ['Add record', false]);
+
+  // A row the sheet still calculates must stay calculated unless it is typed in.
+  await page.click('#openRecent');
+  await page.waitForSelector('#recentList .entry');
+  await page.click('#recentList .entry >> nth=1');
+  await page.waitForSelector('#editBanner:not([hidden])');
+  check('calculated cells load blank, showing their value behind the cursor', [
+    await page.inputValue('#cashChange'), await page.getAttribute('#cashChange', 'placeholder')
+  ], ['', '400']);
+  await page.fill('#customer', 'Joshua');
+  await page.click('#submit');
+  await page.waitForFunction(() => document.getElementById('toast').className.includes('ok'));
+  const keep = upstream.filter(p => p.action === 'update').pop();
+  check('an untouched calculated cell is not frozen into a number',
+    [keep.cashChange, keep.emoneyChange, keep.customer], [null, null, 'Joshua']);
+
+  // Delete, with the confirm accepted.
+  await page.click('#openRecent');
+  await page.waitForSelector('#recentList .entry');
+  await page.click('#recentList .entry >> nth=0');
+  await page.waitForSelector('#editBanner:not([hidden])');
+  page.once('dialog', d => d.accept());
+  await page.click('#deleteRecord');
+  await page.waitForFunction(() => document.getElementById('toast').textContent.includes('Deleted'));
+  const removal = upstream.filter(p => p.action === 'delete').pop();
+  check('delete targets the row with its guard', [removal.row, removal.expect.amount], [9, 1000]);
+  check('editing ends after a delete', await page.isVisible('#editBanner'), false);
+
+  // Cancelling the confirm must not send anything.
+  const deletesSoFar = upstream.filter(p => p.action === 'delete').length;
+  await page.click('#openRecent');
+  await page.waitForSelector('#recentList .entry');
+  await page.click('#recentList .entry >> nth=0');
+  page.once('dialog', d => d.dismiss());
+  await page.click('#deleteRecord');
+  check('a dismissed confirm deletes nothing', upstream.filter(p => p.action === 'delete').length, deletesSoFar);
+  await page.click('#cancelEdit');
+  check('Cancel leaves edit mode', await page.isVisible('#editBanner'), false);
   await page.close();
 
   /* ------------------------------------- server up, env vars not set yet */

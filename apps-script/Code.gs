@@ -59,6 +59,12 @@ function handle_(body, e) {
         return json_(getConfig_());
       case 'append':
         return json_(appendTransaction_(body));
+      case 'list':
+        return json_(listTransactions_(body));
+      case 'update':
+        return json_(updateTransaction_(body));
+      case 'delete':
+        return json_(deleteTransaction_(body));
       default:
         return json_({ ok: false, error: 'Unknown action: ' + body.action });
     }
@@ -271,17 +277,8 @@ function appendTransaction_(body) {
   var isoDate = String(body.date || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) throw new Error('Date must be formatted yyyy-mm-dd.');
 
-  // A retried submit from the phone must not add the row twice.
-  var cache = CacheService.getScriptCache();
-  var cacheKey = body.clientId ? 'req_' + body.clientId : null;
-  if (cacheKey) {
-    var previous = cache.get(cacheKey);
-    if (previous) {
-      var result = JSON.parse(previous);
-      result.duplicate = true;
-      return result;
-    }
-  }
+  var cached = cachedResult_(body);
+  if (cached) return cached;
 
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -332,11 +329,177 @@ function appendTransaction_(body) {
         emoney: cols.emoneyBalance ? numberOrNull_(sheet.getRange(targetRow, cols.emoneyBalance).getValue()) : null
       }
     };
-    if (cacheKey) cache.put(cacheKey, JSON.stringify(out), 21600); // 6 hours
-    return out;
+    return remember_(body, out);
   } finally {
     lock.releaseLock();
   }
+}
+
+/* ------------------------------------------------- edit an existing row */
+
+/** The most recent rows of a sheet, newest first, for the phone's list. */
+function listTransactions_(body) {
+  var logs = logSheets_();
+  var log = body.sheet
+    ? logs.filter(function (l) { return l.name === body.sheet; })[0]
+    : pickLogSheet_(logs);
+  if (!log) throw new Error('Sheet not found: ' + body.sheet);
+
+  var limit = Math.min(Math.max(Number(body.limit) || 25, 1), 100);
+  var lastRow = lastDataRow_(log.sheet, log.cols, log.headerRow);
+  var rows = [];
+  for (var row = lastRow; row > log.headerRow && rows.length < limit; row--) {
+    rows.push(rowValues_(log.sheet, log.cols, row));
+  }
+  return { ok: true, sheet: log.name, rows: rows };
+}
+
+/**
+ * One row as the phone shows it. Cash Change and E-Money Change report whether
+ * they still hold a formula, so editing a row does not silently freeze a
+ * calculated cell into a typed-in number.
+ */
+function rowValues_(sheet, cols, row) {
+  var date = cols.date ? sheet.getRange(row, cols.date).getValue() : null;
+  var out = {
+    row: row,
+    date: (date instanceof Date) ? Utilities.formatDate(date, timezone_(), 'yyyy-MM-dd') : '',
+    type: cols.type ? String(sheet.getRange(row, cols.type).getValue()) : '',
+    customer: cols.customer ? String(sheet.getRange(row, cols.customer).getValue()) : '',
+    amount: cols.amount ? numberOrNull_(sheet.getRange(row, cols.amount).getValue()) : null,
+    fee: cols.fee ? numberOrNull_(sheet.getRange(row, cols.fee).getValue()) : null,
+    notes: cols.notes ? String(sheet.getRange(row, cols.notes).getValue()) : '',
+    balances: {
+      cash: cols.cashBalance ? numberOrNull_(sheet.getRange(row, cols.cashBalance).getValue()) : null,
+      emoney: cols.emoneyBalance ? numberOrNull_(sheet.getRange(row, cols.emoneyBalance).getValue()) : null
+    }
+  };
+  ['cashChange', 'emoneyChange'].forEach(function (key) {
+    if (!cols[key]) { out[key] = { value: null, calculated: false }; return; }
+    var cell = sheet.getRange(row, cols[key]);
+    out[key] = { value: numberOrNull_(cell.getValue()), calculated: !!cell.getFormula() };
+  });
+  return out;
+}
+
+/**
+ * Finds the row the phone asked for and refuses if it no longer holds the
+ * record that was on screen — rows shift when the sheet is edited elsewhere,
+ * and overwriting the wrong transaction is worse than a failed save.
+ */
+function locateRow_(body) {
+  var logs = logSheets_();
+  var log = body.sheet
+    ? logs.filter(function (l) { return l.name === body.sheet; })[0]
+    : pickLogSheet_(logs);
+  if (!log) throw new Error('Sheet not found: ' + body.sheet);
+
+  var row = Number(body.row);
+  var lastRow = lastDataRow_(log.sheet, log.cols, log.headerRow);
+  if (!row || row <= log.headerRow || row > lastRow) throw new Error('Row ' + body.row + ' is not a transaction row.');
+
+  var current = rowValues_(log.sheet, log.cols, row);
+  var expect = body.expect || {};
+  if (expect.date && expect.date !== current.date) {
+    throw new Error('That row now holds a different date. Refresh the list and try again.');
+  }
+  if (expect.amount !== undefined && expect.amount !== null && Number(expect.amount) !== current.amount) {
+    throw new Error('That row now holds a different amount. Refresh the list and try again.');
+  }
+  return { log: log, row: row, current: current, firstDataRow: log.headerRow + 1, lastRow: lastRow };
+}
+
+function updateTransaction_(body) {
+  var cached = cachedResult_(body);
+  if (cached) return cached;
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var found = locateRow_(body);
+    var sheet = found.log.sheet, cols = found.log.cols, row = found.row;
+
+    if (body.date !== undefined && body.date !== '') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.date))) throw new Error('Date must be formatted yyyy-mm-dd.');
+      var parts = String(body.date).split('-');
+      sheet.getRange(row, cols.date).setValue(new Date(+parts[0], +parts[1] - 1, +parts[2]));
+    }
+    if (body.type) sheet.getRange(row, cols.type).setValue(String(body.type).trim());
+    if (body.customer !== undefined && cols.customer) sheet.getRange(row, cols.customer).setValue(String(body.customer).trim());
+    if (body.notes !== undefined && cols.notes) sheet.getRange(row, cols.notes).setValue(String(body.notes).trim());
+
+    if (body.amount !== undefined && body.amount !== '') {
+      var amount = Number(body.amount);
+      if (!isFinite(amount) || amount <= 0) throw new Error('Amount must be a number greater than zero.');
+      sheet.getRange(row, cols.amount).setValue(amount);
+    }
+
+    // A blank change field leaves that cell exactly as it is, formula included.
+    var cashChange = number_(body.cashChange);
+    var emoneyChange = number_(body.emoneyChange);
+    if (cols.cashChange && cashChange !== null) sheet.getRange(row, cols.cashChange).setValue(cashChange);
+    if (cols.emoneyChange && emoneyChange !== null) sheet.getRange(row, cols.emoneyChange).setValue(emoneyChange);
+
+    SpreadsheetApp.flush();
+    var after = rowValues_(sheet, cols, row);
+    return remember_(body, {
+      ok: true, sheet: found.log.name, row: row, fee: after.fee,
+      changes: { cash: after.cashChange.value, emoney: after.emoneyChange.value },
+      balances: after.balances
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function deleteTransaction_(body) {
+  var cached = cachedResult_(body);
+  if (cached) return cached;
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var found = locateRow_(body);
+    // The first data row is where the running balances pick up the opening
+    // figures; removing it would leave the next row pointing at the header.
+    if (found.row === found.firstDataRow) {
+      throw new Error('This is the first row of the sheet — edit it instead of deleting it.');
+    }
+    found.log.sheet.deleteRow(found.row);
+    SpreadsheetApp.flush();
+
+    var lastRow = lastDataRow_(found.log.sheet, found.log.cols, found.log.headerRow);
+    var balances = { cash: null, emoney: null };
+    if (lastRow > found.log.headerRow) {
+      var tail = rowValues_(found.log.sheet, found.log.cols, lastRow);
+      balances = tail.balances;
+    }
+    return remember_(body, { ok: true, sheet: found.log.name, row: found.row, deleted: true, balances: balances });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* A retried write from the phone must not be applied twice. */
+
+function cacheKey_(body) {
+  return body.clientId ? 'req_' + body.clientId : null;
+}
+
+function cachedResult_(body) {
+  var key = cacheKey_(body);
+  if (!key) return null;
+  var previous = CacheService.getScriptCache().get(key);
+  if (!previous) return null;
+  var result = JSON.parse(previous);
+  result.duplicate = true;
+  return result;
+}
+
+function remember_(body, result) {
+  var key = cacheKey_(body);
+  if (key) CacheService.getScriptCache().put(key, JSON.stringify(result), 21600); // 6 hours
+  return result;
 }
 
 /**

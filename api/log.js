@@ -15,7 +15,7 @@
 
 var crypto = require('crypto');
 
-var ALLOWED_ACTIONS = ['config', 'append'];
+var ALLOWED_ACTIONS = ['config', 'append', 'list', 'update', 'delete'];
 
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');

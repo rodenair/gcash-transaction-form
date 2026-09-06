@@ -88,6 +88,18 @@
   .sign[data-sign="+"] { color: var(--good); border-color: var(--good); }
   .label-row { display: flex; justify-content: space-between; align-items: baseline; }
 
+  .entry {
+    display: flex; justify-content: space-between; gap: 12px; width: 100%; text-align: left;
+    background: none; border: none; border-bottom: 1px solid var(--line);
+    padding: 12px 2px; cursor: pointer; color: var(--text);
+  }
+  .entry:last-child { border-bottom: none; }
+  .entry:active { background: var(--panel-2); }
+  .entry .who { display: block; font-size: 15px; }
+  .entry .when { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .entry .money { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .entry .money .amount { font-size: 15px; font-weight: 600; }
+
   .preview { background: var(--panel-2); border-radius: 12px; padding: 11px 13px; font-size: 14px; }
   .preview b { font-variant-numeric: tabular-nums; }
 
@@ -150,7 +162,10 @@
 <section id="app" class="wrap" hidden>
   <div class="row spread">
     <h1 id="sheetTitle">Add record</h1>
-    <button class="link" id="openSettings">Settings</button>
+    <div class="row" style="gap:14px">
+      <button class="link" id="openRecent">Recent</button>
+      <button class="link" id="openSettings">Settings</button>
+    </div>
   </div>
 
   <div class="card">
@@ -162,6 +177,14 @@
       <span id="sheetLine">Loading…</span>
       <button class="link" id="refresh">Refresh</button>
     </div>
+  </div>
+
+  <div class="card" id="editBanner" hidden>
+    <div class="row spread">
+      <span class="small">Editing <b id="editRowLabel"></b></span>
+      <button class="link" id="cancelEdit">Cancel</button>
+    </div>
+    <button type="button" class="btn secondary" id="deleteRecord" style="margin-top:10px">Delete this record</button>
   </div>
 
   <form id="form" class="card" novalidate>
@@ -234,6 +257,17 @@
   </div>
 </section>
 
+<!-- ----------------------------------------------------------- recent ---->
+<section id="recent" class="wrap" hidden>
+  <div class="row spread">
+    <h1>Recent records</h1>
+    <button class="link" id="closeRecent">Done</button>
+  </div>
+  <div class="card">
+    <div id="recentList" class="small muted">Loading…</div>
+  </div>
+</section>
+
 <!-- --------------------------------------------------------- settings ---->
 <section id="settings" class="wrap" hidden>
   <div class="row spread">
@@ -285,6 +319,7 @@
   var config = null;
   var selectedType = FALLBACK_TYPES[0];
   var setupMode = 'pin';
+  var editing = null;
   var edited = false;
   var sending = false;
 
@@ -331,7 +366,7 @@
     toastTimer = setTimeout(function () { el.hidden = true; }, kind === 'err' ? 7000 : 4000);
   }
   function show(section) {
-    ['setup', 'app', 'settings'].forEach(function (id) { $(id).hidden = id !== section; });
+    ['setup', 'app', 'recent', 'settings'].forEach(function (id) { $(id).hidden = id !== section; });
     $('submitBar').hidden = section !== 'app';
   }
 
@@ -540,6 +575,110 @@
       : 'Cash and e-money left to the spreadsheet’s formulas.') + '</span>';
   }
 
+  /* ------------------------------------------------- recent + editing */
+
+  function openRecent() {
+    show('recent');
+    $('recentList').textContent = 'Loading…';
+    call({ action: 'list', sheet: settings.sheet || '', limit: 25 }).then(function (data) {
+      renderRecent(data.rows || []);
+    }).catch(function (err) {
+      $('recentList').textContent = err.message;
+    });
+  }
+
+  function renderRecent(rows) {
+    var list = $('recentList');
+    list.innerHTML = '';
+    if (!rows.length) { list.textContent = 'No records on this sheet yet.'; return; }
+    list.className = '';
+    rows.forEach(function (row) {
+      var entry = document.createElement('button');
+      entry.type = 'button';
+      entry.className = 'entry';
+      entry.innerHTML =
+        '<span><span class="who">' + escapeHtml(row.type + (row.customer ? ' · ' + row.customer : '')) + '</span>' +
+        '<span class="when">' + escapeHtml(row.date) + ' · row ' + row.row + (row.notes ? ' · ' + escapeHtml(row.notes) : '') + '</span></span>' +
+        '<span class="money"><span class="amount">' + peso(row.amount) + '</span>' +
+        '<div class="when">' + (row.fee ? 'fee ' + peso(row.fee) : 'no fee') + '</div></span>';
+      entry.addEventListener('click', function () { editRecord(row); });
+      list.appendChild(entry);
+    });
+  }
+
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  /** Load a record into the form and switch to editing it. */
+  function editRecord(row) {
+    editing = {
+      sheet: row.sheet || settings.sheet || (config && config.activeSheet) || '',
+      row: row.row,
+      expect: { date: row.date, amount: row.amount }
+    };
+    selectedType = row.type;
+    renderTypes(config && config.types && config.types.length ? config.types : FALLBACK_TYPES);
+    $('amount').value = row.amount === null ? '' : String(row.amount);
+    $('customer').value = row.customer || '';
+    $('date').value = row.date || todayISO();
+    $('notes').value = row.notes || '';
+
+    // A cell the sheet still calculates stays blank here, with its current
+    // value shown behind the cursor — typing is what freezes it into a number.
+    [['cashChange', 'cashSign', row.cashChange], ['emoneyChange', 'emoneySign', row.emoneyChange]]
+      .forEach(function (field) {
+        var cell = field[2] || { value: null, calculated: false };
+        if (cell.calculated) {
+          setChange(field[0], field[1], null);
+          $(field[0]).placeholder = cell.value === null ? 'calculated' : String(cell.value);
+        } else {
+          $(field[0]).placeholder = '';
+          setChange(field[0], field[1], cell.value);
+        }
+      });
+
+    edited = true; // never overwrite a loaded record with a suggestion
+    setEditMode();
+    updatePreview();
+    show('app');
+  }
+
+  function setEditMode() {
+    var on = !!editing;
+    $('editBanner').hidden = !on;
+    $('sheetTitle').textContent = on ? 'Edit record' : 'Add record';
+    $('submit').textContent = on ? 'Save changes' : 'Add record';
+    if (on) $('editRowLabel').textContent = editing.sheet + ' row ' + editing.row;
+  }
+
+  function stopEditing() {
+    editing = null;
+    setEditMode();
+    resetForm();
+  }
+
+  function removeRecord() {
+    if (!editing) return;
+    if (!confirm('Delete ' + editing.sheet + ' row ' + editing.row + '? The rows below shift up.')) return;
+    var request = {
+      action: 'delete', clientId: uuid(), sheet: editing.sheet,
+      row: editing.row, expect: editing.expect
+    };
+    $('deleteRecord').disabled = true;
+    call(request).then(function (data) {
+      stopEditing();
+      toast('Deleted ' + data.sheet + ' row ' + data.row + '.', 'ok');
+      loadConfig();
+    }).catch(function (err) {
+      toast(err.message, 'err');
+    }).then(function () {
+      $('deleteRecord').disabled = false;
+    });
+  }
+
   /* ----------------------------------------------------------- submit */
   function submit() {
     if (sending) return;
@@ -548,7 +687,7 @@
     if (!$('date').value) { toast('Pick a date.', 'err'); return; }
 
     var record = {
-      action: 'append',
+      action: editing ? 'update' : 'append',
       clientId: uuid(),
       date: $('date').value,
       type: selectedType,
@@ -557,9 +696,14 @@
       cashChange: changeValue('cashChange', 'cashSign'),
       emoneyChange: changeValue('emoneyChange', 'emoneySign'),
       notes: $('notes').value.trim(),
-      sheet: settings.sheet || ''
+      sheet: editing ? editing.sheet : (settings.sheet || '')
     };
+    if (editing) {
+      record.row = editing.row;
+      record.expect = editing.expect;
+    }
 
+    var wasEditing = !!editing;
     sending = true;
     $('submit').disabled = true;
     $('submit').textContent = 'Saving…';
@@ -567,14 +711,17 @@
     call(record).then(function (data) {
       config = config || { balances: {} };
       config.balances = data.balances;
-      config.rowsUsed = (config.rowsUsed || 0) + 1;
+      if (!wasEditing) config.rowsUsed = (config.rowsUsed || 0) + 1;
       renderConfig();
-      resetForm();
-      toast('Saved to ' + data.sheet + ' row ' + data.row +
+      stopEditing();
+      toast((wasEditing ? 'Updated ' : 'Saved to ') + data.sheet + ' row ' + data.row +
             (data.fee ? ' · fee ' + peso(data.fee) : '') +
             ' · cash ' + peso(data.balances.cash) + ' · e-money ' + peso(data.balances.emoney), 'ok');
       loadConfig();
     }).catch(function (err) {
+      // Only new records are safe to hold and retry. An edit is tied to a row
+      // number that may not mean the same thing later.
+      if (wasEditing) { toast(err.message, 'err'); return; }
       var pending = queue();
       pending.push(record);
       setQueue(pending);
@@ -583,7 +730,7 @@
     }).then(function () {
       sending = false;
       $('submit').disabled = false;
-      $('submit').textContent = 'Add record';
+      setEditMode();
     });
   }
 
@@ -592,6 +739,8 @@
     $('customer').value = '';
     $('notes').value = '';
     $('date').value = todayISO();
+    $('cashChange').placeholder = '';
+    $('emoneyChange').placeholder = '';
     edited = false;
     applySuggestion(true);
     updatePreview();
@@ -687,6 +836,10 @@
     });
 
     $('refresh').addEventListener('click', function () { loadConfig(); });
+    $('openRecent').addEventListener('click', openRecent);
+    $('closeRecent').addEventListener('click', function () { show('app'); });
+    $('cancelEdit').addEventListener('click', stopEditing);
+    $('deleteRecord').addEventListener('click', removeRecord);
     $('submit').addEventListener('click', submit);
     $('amount').addEventListener('input', function () {
       applySuggestion(false);
