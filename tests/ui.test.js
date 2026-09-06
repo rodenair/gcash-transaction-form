@@ -33,6 +33,7 @@ global.fetch = async (url, options) => {
 
 const handler = require('../api/log.js');
 let proxyEnabled = true;
+let envBroken = false;
 
 const server = http.createServer((req, res) => {
   if (req.url === '/api/log') {
@@ -50,7 +51,10 @@ const server = http.createServer((req, res) => {
           return this;
         }
       };
+      const saved = process.env.SCRIPT_URL;
+      if (envBroken) delete process.env.SCRIPT_URL;
       await handler({ method: req.method, body: raw }, shim);
+      if (envBroken) process.env.SCRIPT_URL = saved;
     });
   }
   const file = path.join(ROOT, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
@@ -117,6 +121,20 @@ const check = (label, actual, expected) => {
   check('reload goes straight to the form', await page.isVisible('#setup'), false);
   await page.close();
 
+  /* ------------------------------------- server up, env vars not set yet */
+  envBroken = true;
+  const misconfigured = await context.newPage();
+  misconfigured.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+  await misconfigured.goto('http://localhost:8099/index.html');
+  await misconfigured.evaluate(() => localStorage.clear());
+  await misconfigured.reload();
+  await misconfigured.waitForFunction(() => document.getElementById('toast').className.includes('err'));
+  check('missing env var is reported, not swallowed',
+    (await misconfigured.textContent('#toast')).includes('SCRIPT_URL is not set'), true);
+  check('and it lands on the PIN screen rather than a dead end', await misconfigured.isVisible('#setupPin'), true);
+  await misconfigured.close();
+  envBroken = false;
+
   /* ------------------------------------------- static host (direct) mode */
   proxyEnabled = false;
   const plain = await context.newPage();
@@ -159,9 +177,9 @@ const check = (label, actual, expected) => {
 
   // 401s (no PIN yet, wrong PIN) and 404s (the deliberate no-proxy fallback) are
   // statuses this test asks for; anything else is a real fault.
-  const expected = /status of (401|404)/;
+  const expected = /status of (401|404|500)/;
   check('no unexpected page errors', errors.filter(e => !expected.test(e)), []);
-  check('only the intended 401s and 404s were logged', errors.length, 4);
+  check('only the intended 401s, 404s and 500s were logged', errors.length, 6);
   await browser.close();
   server.close();
   console.log(failures ? `\n${failures} failing check(s)` : '\nAll UI checks passed');

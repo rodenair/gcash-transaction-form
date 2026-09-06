@@ -630,6 +630,9 @@
     }).catch(function (err) {
       settings.mode = '';
       showSetup(err.code === 'no-proxy' ? 'direct' : 'pin');
+      // A server that is reachable but misconfigured has something to say —
+      // "SCRIPT_URL is not set", say. Silently showing the PIN box hides it.
+      if (err.code !== 'no-proxy' && err.code !== 'need-pin') toast(err.message, 'err');
     });
   }
 
