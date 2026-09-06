@@ -9,9 +9,16 @@ spreadsheet's own formulas calculate Cash Change, E-Money Change, Fee, both runn
 Month, exactly as when you type a row by hand.
 
 ```
-phone (index.html)  ──POST JSON──▶  Apps Script Web App  ──appendRow──▶  Daily Log sheet
-                    ◀──balances──                        ◀──formulas──
+phone (index.html) ──POST /api/log──▶ Vercel function ──POST JSON──▶ Apps Script ──▶ Daily Log
+                   ◀────balances─────  (holds URL +    ◀──────────────  (formulas)
+                                        secret)
 ```
+
+The phone sends only a PIN. The Apps Script URL and its shared secret live as
+environment variables on the server, so neither is ever shipped to the browser.
+On a host with no server — GitHub Pages, or the file opened locally — the form
+detects that and falls back to talking to Apps Script directly, with the URL and
+secret typed into the phone instead.
 
 ## What the form does
 
@@ -47,22 +54,31 @@ phone (index.html)  ──POST JSON──▶  Apps Script Web App  ──appendR
 Whenever you edit the script afterwards, use **Deploy → Manage deployments → edit → Version: New
 version**, otherwise the phone keeps hitting the old code.
 
-### 2. Publish the form
+### 2. Publish the form on Vercel
 
-**GitHub Pages** (free, works from any phone):
+1. [vercel.com/new](https://vercel.com/new) → import `rodenair/gcash-transaction-form`.
+2. Framework Preset **Other**; no build command, no output directory.
+3. **Settings → Environment Variables**, for Production (and Preview, if you use preview URLs):
 
-1. Repo → **Settings → Pages**.
-2. *Source:* **Deploy from a branch**, branch `main` (or this feature branch), folder `/ (root)`.
-3. After a minute the form is live at
-   `https://rodenair.github.io/gcash-transaction-form/`.
+   | Name | Value |
+   | --- | --- |
+   | `SCRIPT_URL` | your Apps Script `/exec` URL |
+   | `SHARED_SECRET` | the same string as `sharedSecret` in `Code.gs` |
+   | `FORM_PIN` | the PIN you will type on the phone |
 
-Any static host works — the form is plain HTML with no build step. You can also open `index.html`
-straight from a file, though a real URL is what makes "Add to Home Screen" useful.
+4. **Redeploy** — environment variables are read at request time, but a deployment made before
+   they existed still needs one redeploy to pick up the project settings.
+
+`api/log.js` refuses to run unless `SCRIPT_URL` and `FORM_PIN` are both set, so a half-configured
+deployment fails loudly instead of quietly becoming an open write endpoint on your spreadsheet.
+
+**GitHub Pages** works too, without the server piece: Settings → Pages → deploy from a branch,
+`/ (root)`. The form then asks for the `/exec` URL and secret directly on the phone.
 
 ### 3. Connect the phone
 
-1. Open the page, paste the `/exec` URL and the secret, tap **Connect**.
-2. Both are stored in this browser's `localStorage` only — nothing is committed to the repo.
+1. Open the site. On Vercel it asks for the PIN; on a static host it asks for the URL and secret.
+2. Whatever you type is stored in that browser's `localStorage` only — never in the repo.
 3. Browser menu → **Add to Home Screen** for an app-like icon. The shell is cached by a service
    worker, so it opens instantly even on a weak signal.
 
@@ -80,6 +96,8 @@ the URL or secret, or disconnect the phone.
 | --- | --- |
 | `index.html` | The whole form — markup, styles and logic in one file. |
 | `apps-script/Code.gs` | Web App backend: appends the row, returns balances, rate card and recent customers. |
+| `api/log.js` | Vercel function holding the script URL and secret; checks the PIN and forwards. |
+| `vercel.json` | Cache headers for the shell, function timeout. |
 | `sw.js` | Service worker that caches the shell for offline opening. |
 | `manifest.webmanifest`, `icon.svg` | Home-screen icon and app metadata. |
 
@@ -118,10 +136,15 @@ failures.
 - The fee shown on the phone is a preview from the Rate Card. The value written to the sheet is
   always the one the sheet's own formula produces.
 - The script only ever appends after the last dated row; it never edits or deletes existing rows.
+- The PIN gates the proxy, and the proxy is the only thing that knows the Apps Script URL. Change
+  the PIN by editing `FORM_PIN` and redeploying; every phone then has to type the new one.
+- Keep `sharedSecret` blank in the committed `Code.gs`. Set the real value in the Apps Script
+  editor and in `SHARED_SECRET` on Vercel — this repo is public.
 
 ## Tests
 
 ```bash
 node tests/appscript.test.js   # backend logic against a simulated spreadsheet, no dependencies
-node tests/ui.test.js          # drives the form in Chromium against a mocked script (needs playwright)
+node tests/proxy.test.js       # the Vercel function: PIN handling, secret injection, upstream errors
+node tests/ui.test.js          # drives the form in Chromium, both PIN and direct modes (needs playwright)
 ```

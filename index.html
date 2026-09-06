@@ -109,18 +109,29 @@
 
 <!-- ------------------------------------------------------------ setup ---->
 <section id="setup" class="wrap" hidden>
-  <h1>Connect your tracker</h1>
+  <h1 id="setupTitle">Connect your tracker</h1>
   <div class="card">
-    <div class="field">
-      <label for="setupUrl">Apps Script Web App URL</label>
-      <input id="setupUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec">
+    <div id="setupPin" hidden>
+      <div class="field">
+        <label for="setupPinInput">PIN</label>
+        <input id="setupPinInput" type="password" inputmode="text" autocomplete="off" placeholder="The FORM_PIN set on the server">
+      </div>
     </div>
-    <div class="field">
-      <label for="setupSecret">Shared secret (optional)</label>
-      <input id="setupSecret" type="text" autocomplete="off" placeholder="Must match SETTINGS.sharedSecret">
+
+    <div id="setupDirect" hidden>
+      <div class="field">
+        <label for="setupUrl">Apps Script Web App URL</label>
+        <input id="setupUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/&#8230;/exec">
+      </div>
+      <div class="field">
+        <label for="setupSecret">Shared secret (optional)</label>
+        <input id="setupSecret" type="text" autocomplete="off" placeholder="Must match SETTINGS.sharedSecret">
+      </div>
     </div>
+
     <button class="btn" id="setupSave">Connect</button>
-    <p class="small muted" style="margin-bottom:0">Deployment steps are in the README of this repo. The URL is saved on this phone only.</p>
+    <p class="small muted" id="setupHelp" style="margin-bottom:0"></p>
+    <button class="link" id="setupToggle" style="margin-top:10px"></button>
   </div>
 </section>
 
@@ -201,12 +212,15 @@
       <select id="cfgSheet"></select>
       <p class="tiny muted" style="margin:6px 0 0">Auto picks the sheet whose latest entry is in the same month as the record.</p>
     </div>
-    <div class="field">
+    <div class="field" id="cfgPinField">
+      <label for="cfgPin">PIN</label>
+      <input id="cfgPin" type="password" autocomplete="off">
+      <p class="tiny muted" id="cfgConnection" style="margin:6px 0 0"></p>
+    </div>
+    <div class="field" id="cfgDirectFields">
       <label for="cfgUrl">Web App URL</label>
       <input id="cfgUrl" type="url" inputmode="url" autocomplete="off">
-    </div>
-    <div class="field">
-      <label for="cfgSecret">Shared secret</label>
+      <label for="cfgSecret" style="margin-top:12px">Shared secret</label>
       <input id="cfgSecret" type="text" autocomplete="off">
     </div>
     <button class="btn" id="cfgSave">Save</button>
@@ -226,13 +240,17 @@
 
   var STORE = 'gcashForm.settings';
   var QUEUE = 'gcashForm.queue';
+  // Same-origin serverless proxy. It holds the script URL and the Apps Script
+  // secret as environment variables, so neither ever reaches the browser.
+  var PROXY = 'api/log';
   var AMOUNT_CHIPS = [50, 100, 300, 500, 1000, 2000, 5000];
   var FALLBACK_TYPES = ['Cash In', 'Cash Out', 'Fund In', 'Load', 'Expense'];
 
   var $ = function (id) { return document.getElementById(id); };
-  var settings = load(STORE, { url: '', secret: '', sheet: '' });
+  var settings = load(STORE, { mode: '', url: '', secret: '', pin: '', sheet: '' });
   var config = null;
   var selectedType = FALLBACK_TYPES[0];
+  var setupMode = 'pin';
   var sending = false;
 
   /* ------------------------------------------------------------ storage */
@@ -279,23 +297,39 @@
   }
 
   /* -------------------------------------------------------------- wire */
+  function direct() { return settings.mode === 'direct'; }
+
   function call(payload) {
-    return fetch(settings.url, {
+    var target = direct() ? settings.url : PROXY;
+    var body = direct()
+      ? Object.assign({ token: settings.secret }, payload)
+      : Object.assign({ pin: settings.pin }, payload);
+    return fetch(target, {
       method: 'POST',
-      // text/plain keeps this a simple request, so the browser skips the CORS
-      // preflight that Apps Script cannot answer.
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({ token: settings.secret }, payload)),
+      // Going straight to Apps Script, text/plain keeps this a simple request so
+      // the browser skips the CORS preflight that Apps Script cannot answer.
+      headers: { 'Content-Type': direct() ? 'text/plain;charset=utf-8' : 'application/json' },
+      body: JSON.stringify(body),
       redirect: 'follow'
     }).then(function (res) {
       return res.text().then(function (text) {
         var data;
-        try { data = JSON.parse(text); }
-        catch (e) { throw new Error('The script did not return JSON. Check that the deployment allows access to "Anyone".'); }
-        if (!data.ok) throw new Error(data.error || 'The script rejected the request.');
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          if (!direct()) throw fail('This page has no server behind it.', 'no-proxy');
+          throw new Error('The script did not return JSON. Check that the deployment allows access to "Anyone".');
+        }
+        if (!data.ok) throw fail(data.error || 'The request was rejected.', data.needPin ? 'need-pin' : '');
         return data;
       });
     });
+  }
+
+  function fail(message, code) {
+    var error = new Error(message);
+    error.code = code || '';
+    return error;
   }
 
   /* ------------------------------------------------------------ config */
@@ -488,28 +522,58 @@
   /* ------------------------------------------------------------- boot */
   function bindEvents() {
     $('setupSave').addEventListener('click', function () {
-      var url = $('setupUrl').value.trim();
-      if (!/^https:\/\/script\.google\.com\/.*\/exec$/.test(url)) {
-        toast('That does not look like a Web App /exec URL.', 'err');
-        return;
+      if (setupMode === 'direct') {
+        var url = $('setupUrl').value.trim();
+        if (!/^https:\/\/script\.google\.com\/.*\/exec$/.test(url)) {
+          toast('That does not look like a Web App /exec URL.', 'err');
+          return;
+        }
+        settings.mode = 'direct';
+        settings.url = url;
+        settings.secret = $('setupSecret').value.trim();
+      } else {
+        var pin = $('setupPinInput').value.trim();
+        if (!pin) { toast('Enter the PIN.', 'err'); return; }
+        settings.mode = 'proxy';
+        settings.pin = pin;
       }
-      settings.url = url;
-      settings.secret = $('setupSecret').value.trim();
-      save(STORE, settings);
-      show('app');
-      loadConfig();
+      $('setupSave').disabled = true;
+      call({ action: 'config' }).then(function (data) {
+        save(STORE, settings);
+        config = data;
+        show('app');
+        renderConfig();
+        flushQueue(true);
+      }).catch(function (err) {
+        settings.mode = '';
+        toast(err.code === 'need-pin' ? 'That PIN was not accepted.' : err.message, 'err');
+      }).then(function () {
+        $('setupSave').disabled = false;
+      });
+    });
+
+    $('setupToggle').addEventListener('click', function () {
+      showSetup(setupMode === 'pin' ? 'direct' : 'pin');
     });
 
     $('openSettings').addEventListener('click', function () {
       $('cfgUrl').value = settings.url;
       $('cfgSecret').value = settings.secret;
+      $('cfgPin').value = settings.pin;
+      $('cfgPinField').hidden = direct();
+      $('cfgDirectFields').hidden = !direct();
+      $('cfgConnection').textContent = 'Sent through this site\u2019s server, which holds the script URL and secret.';
       show('settings');
     });
     $('closeSettings').addEventListener('click', function () { show('app'); });
 
     $('cfgSave').addEventListener('click', function () {
-      settings.url = $('cfgUrl').value.trim();
-      settings.secret = $('cfgSecret').value.trim();
+      if (direct()) {
+        settings.url = $('cfgUrl').value.trim();
+        settings.secret = $('cfgSecret').value.trim();
+      } else {
+        settings.pin = $('cfgPin').value.trim();
+      }
       settings.sheet = $('cfgSheet').value;
       save(STORE, settings);
       show('app');
@@ -519,8 +583,8 @@
     $('cfgForget').addEventListener('click', function () {
       if (!confirm('Remove the saved URL and secret from this phone?')) return;
       localStorage.removeItem(STORE);
-      settings = { url: '', secret: '', sheet: '' };
-      show('setup');
+      settings = { mode: '', url: '', secret: '', pin: '', sheet: '' };
+      detect();
     });
 
     $('refresh').addEventListener('click', function () { loadConfig(); });
@@ -549,11 +613,46 @@
     window.addEventListener('online', function () { flushQueue(true); });
   }
 
+  /**
+   * Decide how this page reaches the spreadsheet. A deployment with the
+   * serverless proxy needs only a PIN; a plain static host (GitHub Pages, a
+   * local file) falls back to the Apps Script URL typed on the phone.
+   */
+  function detect() {
+    settings.mode = 'proxy';
+    settings.pin = settings.pin || '';
+    call({ action: 'config' }).then(function (data) {
+      save(STORE, settings);
+      config = data;
+      show('app');
+      renderConfig();
+      flushQueue(true);
+    }).catch(function (err) {
+      settings.mode = '';
+      showSetup(err.code === 'no-proxy' ? 'direct' : 'pin');
+    });
+  }
+
+  function showSetup(mode) {
+    setupMode = mode;
+    var pin = mode === 'pin';
+    $('setupPin').hidden = !pin;
+    $('setupDirect').hidden = pin;
+    $('setupTitle').textContent = pin ? 'Enter your PIN' : 'Connect your tracker';
+    $('setupHelp').textContent = pin
+      ? 'The PIN is the FORM_PIN environment variable on this site. It is saved on this phone only.'
+      : 'This page has no server behind it, so it talks to Apps Script directly. Deployment steps are in the README.';
+    $('setupToggle').textContent = pin
+      ? 'Connect straight to Apps Script instead'
+      : 'Use a PIN instead';
+    show('setup');
+  }
+
   bindEvents();
   renderTypes(FALLBACK_TYPES);
   renderQueue();
   $('date').value = todayISO();
-  if (settings.url) { show('app'); loadConfig(); } else { show('setup'); }
+  if (settings.mode) { show('app'); loadConfig(); } else { detect(); }
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(function () {});

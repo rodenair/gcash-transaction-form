@@ -6,5 +6,8 @@
         { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
       ]
     }
-  ]
+  ],
+  "functions": {
+    "api/log.js": { "maxDuration": 30 }
+  }
 }

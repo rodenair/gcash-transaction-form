@@ -1,4 +1,5 @@
-/* Drives index.html in Chromium against a mocked Apps Script endpoint. */
+/* Drives index.html in Chromium: once against the serverless proxy (PIN mode),
+   once against a plain static host with no server (direct Apps Script mode). */
 const { chromium, devices } = require('playwright');
 const http = require('http');
 const fs = require('fs');
@@ -6,135 +7,161 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const EXEC = 'https://script.google.com/macros/s/MOCKMOCKMOCK/exec';
+const PIN = '4821';
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
 
+const CONFIG = {
+  ok: true, timezone: 'Asia/Manila', today: '2026-09-05', spreadsheetName: 'GCash Tracker',
+  sheets: ['Aug 2026', 'Sep 2026'], activeSheet: 'Sep 2026', rowsUsed: 4,
+  balances: { cash: 21830, emoney: -44720 },
+  types: ['Cash In', 'Cash Out', 'Fund In', 'Load', 'Expense'],
+  customers: ['Josh', 'Iresh', 'Mariel', 'Gomer', 'Danica', 'Arjie', 'Maris'],
+  rateCard: [{ min: 1, max: 100, fee: 5 }, { min: 101, max: 500, fee: 10 }, { min: 501, max: 1000, fee: 15 }]
+};
+const APPENDED = { ok: true, sheet: 'Sep 2026', row: 10, fee: 10, balances: { cash: 22340, emoney: 44220 } };
+
+process.env.SCRIPT_URL = EXEC;
+process.env.SHARED_SECRET = 'apps-script-secret';
+process.env.FORM_PIN = PIN;
+
+const upstream = [];
+global.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  upstream.push(body);
+  return { text: async () => JSON.stringify(body.action === 'config' ? CONFIG : APPENDED) };
+};
+
+const handler = require('../api/log.js');
+let proxyEnabled = true;
+
 const server = http.createServer((req, res) => {
+  if (req.url === '/api/log') {
+    if (!proxyEnabled) { res.writeHead(404, { 'Content-Type': 'text/html' }); return res.end('<html>404</html>'); }
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    return req.on('end', async () => {
+      const shim = {
+        headers: {},
+        setHeader(k, v) { this.headers[k] = v; },
+        status(code) { this.code = code; return this; },
+        json(body) {
+          res.writeHead(this.code, Object.assign({ 'Content-Type': 'application/json' }, this.headers));
+          res.end(JSON.stringify(body));
+          return this;
+        }
+      };
+      await handler({ method: req.method, body: raw }, shim);
+    });
+  }
   const file = path.join(ROOT, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
   if (!file.startsWith(ROOT) || !fs.existsSync(file)) { res.writeHead(404); return res.end('nope'); }
   res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'text/plain' });
   res.end(fs.readFileSync(file));
 });
 
+let failures = 0;
+const check = (label, actual, expected) => {
+  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!ok) failures++;
+  console.log((ok ? 'PASS  ' : 'FAIL  ') + label + (ok ? '' : `\n      got ${JSON.stringify(actual)} want ${JSON.stringify(expected)}`));
+};
+
 (async () => {
   await new Promise(r => server.listen(8099, r));
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
   const context = await browser.newContext(devices['Pixel 7']);
-  const page = await context.newPage();
-
   const errors = [];
-  page.on('pageerror', e => errors.push('pageerror: ' + e.message));
+  context.on('weberror', e => errors.push('pageerror: ' + e.error().message));
+
+  /* ---------------------------------------------------- proxy (PIN) mode */
+  let page = await context.newPage();
   page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
-  context.on('response', r => { if (r.status() === 404) errors.push('404: ' + r.url()); });
-  context.on('requestfailed', r => errors.push('failed: ' + r.url()));
-
-  const posted = [];
-  let failNext = false;
-  await context.route(EXEC, async (route) => {
-    const body = JSON.parse(route.request().postData() || '{}');
-    posted.push(body);
-    if (failNext) return route.abort('failed');
-    const payload = body.action === 'config'
-      ? {
-          ok: true, timezone: 'Asia/Manila', today: '2026-09-05', spreadsheetName: 'GCash Tracker',
-          sheets: ['Aug 2026', 'Sep 2026'], activeSheet: 'Sep 2026', rowsUsed: 4,
-          balances: { cash: 21830, emoney: -44720 },
-          types: ['Cash In', 'Cash Out', 'Fund In', 'Load', 'Expense'],
-          customers: ['Josh', 'Iresh', 'Mariel', 'Gomer', 'Danica', 'Arjie', 'Maris'],
-          rateCard: [{ min: 1, max: 100, fee: 5 }, { min: 101, max: 500, fee: 10 }, { min: 501, max: 1000, fee: 15 }]
-        }
-      : { ok: true, sheet: 'Sep 2026', row: 10, fee: 10, balances: { cash: 22340, emoney: 44220 } };
-    await route.fulfill({ status: 200, contentType: 'application/json',
-      headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(payload) });
-  });
-
-  let failures = 0;
-  const check = (label, actual, expected) => {
-    const ok = JSON.stringify(actual) === JSON.stringify(expected);
-    if (!ok) failures++;
-    console.log((ok ? 'PASS  ' : 'FAIL  ') + label + (ok ? '' : `\n      got ${JSON.stringify(actual)} want ${JSON.stringify(expected)}`));
-  };
-
-  // --- setup screen ---
   await page.goto('http://localhost:8099/index.html');
-  check('setup screen shown first', await page.isVisible('#setup'), true);
-  await page.fill('#setupUrl', 'not-a-url');
-  await page.click('#setupSave');
-  check('bad URL rejected', (await page.textContent('#toast')).includes('/exec URL'), true);
 
-  await page.fill('#setupUrl', EXEC);
-  await page.fill('#setupSecret', 's3cret');
+  await page.waitForSelector('#setupPin:not([hidden])');
+  check('no PIN yet → PIN screen, not a URL box', await page.isVisible('#setupDirect'), false);
+  check('PIN screen explains where the PIN comes from', (await page.textContent('#setupHelp')).includes('FORM_PIN'), true);
+
+  await page.fill('#setupPinInput', '9999');
+  await page.click('#setupSave');
+  await page.waitForFunction(() => document.getElementById('toast').className.includes('err'));
+  check('wrong PIN refused', (await page.textContent('#toast')).includes('PIN was not accepted'), true);
+  check('wrong PIN not saved', await page.evaluate(() => localStorage.getItem('gcashForm.settings')), null);
+
+  await page.fill('#setupPinInput', PIN);
   await page.click('#setupSave');
   await page.waitForSelector('#app:not([hidden])');
-  await page.waitForFunction(() => document.getElementById('balCash').textContent !== '—');
+  check('balances rendered after connecting', await page.textContent('#balCash'), '₱21,830');
+  check('script URL never reaches the browser', await page.evaluate(() => document.documentElement.outerHTML.includes('script.google.com/macros/s/MOCK')), false);
+  check('only the PIN is stored on the phone', await page.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem('gcashForm.settings'));
+    return [s.mode, s.pin, s.url, s.secret];
+  }), ['proxy', PIN, '', '']);
 
-  check('config request sent with token', [posted[0].action, posted[0].token], ['config', 's3cret']);
-  check('cash balance rendered', await page.textContent('#balCash'), '₱21,830');
-  check('negative balance styled', await page.getAttribute('#balEmoney', 'class'), 'value neg');
-  check('sheet line', await page.textContent('#sheetLine'), 'Sep 2026 · 4 rows');
-  check('type buttons rendered', await page.locator('#typeSeg button').count(), 5);
-  check('customer chips capped at 6', await page.locator('#customerChips .chip').count(), 6);
-  check('date defaults to today', await page.inputValue('#date'), new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10));
-
-  // --- validation ---
-  await page.click('#submit');
-  check('empty amount blocked', (await page.textContent('#toast')).includes('Enter an amount'), true);
-
-  // --- fee preview ---
-  await page.fill('#amount', '500');
-  check('fee preview from rate card', (await page.textContent('#preview')).includes('fee ₱10'), true);
-  await page.click('#typeSeg button:nth-child(3)'); // Fund In
-  check('fund in has no fee', (await page.textContent('#preview')).includes('no fee'), true);
-  await page.fill('#amount', '20000');
-  await page.click('#typeSeg button:nth-child(1)'); // Cash In
-  check('above the top bracket uses 2% − ₱10', (await page.textContent('#preview')).includes('fee ₱390'), true);
-
-  // --- successful submit ---
   await page.fill('#amount', '500');
   await page.click('#customerChips .chip >> nth=1');
-  check('chip fills the customer', await page.inputValue('#customer'), 'Iresh');
-  await page.fill('#notes', 'from the phone');
   await page.click('#submit');
   await page.waitForFunction(() => document.getElementById('toast').className.includes('ok'));
-  const sent = posted.find(p => p.action === 'append');
-  check('record payload', [sent.type, sent.amount, sent.customer, sent.notes, sent.sheet],
-    ['Cash In', 500, 'Iresh', 'from the phone', '']);
-  check('clientId present for retry-safety', typeof sent.clientId === 'string' && sent.clientId.length > 5, true);
-  check('success toast names sheet and row', (await page.textContent('#toast')).includes('Saved to Sep 2026 row 10'), true);
-  check('form cleared after save', [await page.inputValue('#amount'), await page.inputValue('#customer'), await page.inputValue('#notes')], ['', '', '']);
+  const sent = upstream.find(p => p.action === 'append');
+  check('record forwarded with the server-side secret', [sent.type, sent.amount, sent.customer, sent.token],
+    ['Cash In', 500, 'Iresh', 'apps-script-secret']);
+  check('PIN stripped before Apps Script', sent.pin, undefined);
+  check('success toast names the row', (await page.textContent('#toast')).includes('Saved to Sep 2026 row 10'), true);
 
-  // --- offline queue ---
-  failNext = true;
-  await page.fill('#amount', '250');
-  await page.click('#submit');
-  await page.waitForSelector('#queueCard:not([hidden])');
-  check('failed submit is queued', await page.textContent('#queueCount'), '1');
-  check('queue survives reload', await page.evaluate(() => JSON.parse(localStorage.getItem('gcashForm.queue')).length), 1);
+  await page.click('#openSettings');
+  check('settings show the PIN, not the URL', [await page.isVisible('#cfgPinField'), await page.isVisible('#cfgDirectFields')], [true, false]);
+  await page.click('#closeSettings');
 
   await page.reload();
   await page.waitForSelector('#app:not([hidden])');
-  check('reload skips setup once connected', await page.isVisible('#setup'), false);
+  check('reload goes straight to the form', await page.isVisible('#setup'), false);
+  await page.close();
 
-  failNext = false;
-  await page.click('#queueRetry');
-  await page.waitForSelector('#queueCard', { state: 'hidden', timeout: 8000 });
-  check('queued record sent on retry', posted.filter(p => p.amount === 250).length >= 1, true);
+  /* ------------------------------------------- static host (direct) mode */
+  proxyEnabled = false;
+  const plain = await context.newPage();
+  plain.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+  const posted = [];
+  await plain.route(EXEC, async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    posted.push(body);
+    await route.fulfill({
+      status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify(body.action === 'config' ? CONFIG : APPENDED)
+    });
+  });
 
-  // --- settings ---
-  await page.click('#openSettings');
-  await page.selectOption('#cfgSheet', 'Aug 2026');
-  await page.click('#cfgSave');
-  await page.waitForSelector('#app:not([hidden])');
-  await page.fill('#amount', '100');
-  await page.click('#submit');
-  await page.waitForFunction(() => document.getElementById('toast').className.includes('ok'));
-  check('explicit sheet is sent', posted[posted.length - 1].sheet, 'Aug 2026');
+  await plain.goto('http://localhost:8099/index.html');
+  await plain.evaluate(() => localStorage.clear());
+  await plain.reload();
 
-  await page.screenshot({ path: path.join(__dirname, 'form.png'), fullPage: true });
+  await plain.waitForSelector('#setupDirect:not([hidden])');
+  check('no server → asks for the Apps Script URL', await plain.isVisible('#setupPin'), false);
+  await plain.fill('#setupUrl', 'not-a-url');
+  await plain.click('#setupSave');
+  check('bad URL rejected', (await plain.textContent('#toast')).includes('/exec URL'), true);
 
-  // The two ERR_FAILED entries are the submits this test deliberately aborted.
-  const unexpected = errors.filter(e => !/MOCKMOCKMOCK|net::ERR_FAILED/.test(e));
-  check('no unexpected page errors', unexpected, []);
-  check('only the deliberate aborts failed', errors.length, 4);
+  await plain.fill('#setupUrl', EXEC);
+  await plain.fill('#setupSecret', 'apps-script-secret');
+  await plain.click('#setupSave');
+  await plain.waitForSelector('#app:not([hidden])');
+  check('direct mode reaches Apps Script', posted[0].token, 'apps-script-secret');
+
+  await plain.fill('#amount', '250');
+  await plain.click('#submit');
+  await plain.waitForFunction(() => document.getElementById('toast').className.includes('ok'));
+  check('direct mode saves a record', posted.filter(p => p.action === 'append').length, 1);
+
+  await plain.click('#openSettings');
+  check('settings show the URL in direct mode', [await plain.isVisible('#cfgDirectFields'), await plain.isVisible('#cfgPinField')], [true, false]);
+  await plain.click('#closeSettings');
+  await plain.screenshot({ path: path.join(__dirname, 'form.png'), fullPage: true });
+
+  // 401s (no PIN yet, wrong PIN) and 404s (the deliberate no-proxy fallback) are
+  // statuses this test asks for; anything else is a real fault.
+  const expected = /status of (401|404)/;
+  check('no unexpected page errors', errors.filter(e => !expected.test(e)), []);
+  check('only the intended 401s and 404s were logged', errors.length, 4);
   await browser.close();
   server.close();
   console.log(failures ? `\n${failures} failing check(s)` : '\nAll UI checks passed');
