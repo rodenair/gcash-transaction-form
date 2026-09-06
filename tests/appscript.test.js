@@ -97,6 +97,15 @@ class FakeRange {
     }
     return out;
   }
+  getFormulas() {
+    const out = [];
+    for (let r = 0; r < this.numRows; r++) {
+      const line = [];
+      for (let c = 0; c < this.numCols; c++) line.push(this.sheet.cell(this.row + r, this.col + c).formula);
+      out.push(line);
+    }
+    return out;
+  }
   getValue() { return this.sheet.cell(this.row, this.col).value; }
   setValue(value) {
     this.sheet.grid[this.row - 1][this.col - 1] = new Cell(value, '');
@@ -281,7 +290,9 @@ const listed = listTransactions_({ action: 'list', limit: 5 });
 check('list returns the newest first', listed.rows[0].row > listed.rows[1].row, true);
 check('list carries what the phone shows',
   Object.keys(listed.rows[0]).sort(),
-  ['amount', 'balances', 'cashChange', 'customer', 'date', 'emoneyChange', 'fee', 'notes', 'row', 'type']);
+  ['amount', 'balances', 'cashChange', 'customer', 'date', 'emoneyChange', 'fee', 'notes', 'row', 'sheet', 'type']);
+check('list rows report the sheet they actually came from',
+  listed.rows.every(r => r.sheet === 'Sep 2026'), true);
 check('list flags cells that are still calculated',
   listed.rows[listed.rows.length - 1].cashChange.calculated, true);
 check('list flags cells that were typed in',

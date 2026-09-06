@@ -198,7 +198,7 @@ const check = (label, actual, expected) => {
   await page.waitForFunction(() => document.getElementById('toast').className.includes('ok'));
   const edit = upstream.filter(p => p.action === 'update').pop();
   check('an edit is sent as an update on that row', [edit.action, edit.row, edit.amount], ['update', 9, 1200]);
-  check('the edit carries what the row held when it was opened', edit.expect, { date: '2026-09-04', amount: 1000 });
+  check('the edit carries what the row held when it was opened', edit.expect, { date: '2026-09-04', amount: 1000, customer: 'Steph' });
   check('the toast says updated', (await page.textContent('#toast')).includes('Updated Sep 2026 row 9'), true);
   check('the form returns to adding', [await page.textContent('#submit'), await page.isVisible('#editBanner')],
     ['Add record', false]);
