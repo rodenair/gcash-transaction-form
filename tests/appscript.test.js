@@ -186,6 +186,12 @@ global.Utilities = {
   formatDate: (date, tz, format) => {
     const y = date.getFullYear(), m = String(date.getMonth() + 1).padStart(2, '0'), d = String(date.getDate()).padStart(2, '0');
     return format === 'yyyy-MM' ? `${y}-${m}` : `${y}-${m}-${d}`;
+  },
+  // Real Utilities.parseDate reads the string in the given timezone; the fake
+  // spreadsheet has no real timezone of its own, so this just parses yyyy-MM-dd.
+  parseDate: (dateStr, tz, format) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(y, m - 1, d);
   }
 };
 

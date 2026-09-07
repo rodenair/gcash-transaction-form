@@ -310,8 +310,7 @@ function appendTransaction_(body) {
 
     fillFormulas_(sheet, cols, hRow, lastRow, targetRow, typedIn);
 
-    var parts = isoDate.split('-');
-    sheet.getRange(targetRow, cols.date).setValue(new Date(+parts[0], +parts[1] - 1, +parts[2]));
+    sheet.getRange(targetRow, cols.date).setValue(Utilities.parseDate(isoDate, timezone_(), 'yyyy-MM-dd'));
     sheet.getRange(targetRow, cols.type).setValue(type);
     if (cols.customer) sheet.getRange(targetRow, cols.customer).setValue(String(body.customer || '').trim());
     sheet.getRange(targetRow, cols.amount).setValue(amount);
@@ -448,8 +447,7 @@ function updateTransaction_(body) {
 
     if (body.date !== undefined && body.date !== '') {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.date))) throw new Error('Date must be formatted yyyy-mm-dd.');
-      var parts = String(body.date).split('-');
-      sheet.getRange(row, cols.date).setValue(new Date(+parts[0], +parts[1] - 1, +parts[2]));
+      sheet.getRange(row, cols.date).setValue(Utilities.parseDate(String(body.date), timezone_(), 'yyyy-MM-dd'));
     }
     if (body.type) sheet.getRange(row, cols.type).setValue(String(body.type).trim());
     if (body.customer !== undefined && cols.customer) sheet.getRange(row, cols.customer).setValue(String(body.customer).trim());
