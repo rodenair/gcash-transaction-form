@@ -488,6 +488,7 @@
   function estimateFee(amount) {
     if (!amount || amount <= 0) return null;
     if (selectedType === 'Fund In' || selectedType === 'Expense') return 0;
+    if (selectedType === 'Load') return 5;
     var card = (config && config.rateCard) || [];
     for (var i = 0; i < card.length; i++) {
       if (amount >= card[i].min && amount <= card[i].max) return card[i].fee;
